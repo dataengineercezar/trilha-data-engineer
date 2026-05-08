@@ -1,0 +1,47 @@
+# ─── Python ───────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# ─── Ambientes virtuais ───────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+.conda/
+
+# ─── Jupyter ──────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ─── Dados (nunca versionar dados brutos grandes) ─────────
+*.csv
+*.parquet
+!**/*exemplo*.csv
+!**/*exemplo*.parquet
+data/raw/
+data/bronze/
+
+# ─── Credenciais e variáveis de ambiente ──────────────────
+.env
+.env.*
+secrets.yaml
+*credentials*
+
+# ─── IDEs e sistema operacional ───────────────────────────
+.vscode/settings.json
+*.suo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Outputs e logs ───────────────────────────────────────
+logs/
+*.log
+outputs/

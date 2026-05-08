@@ -1,0 +1,9 @@
+# Normaliza line endings para LF no repositório
+* text=auto
+
+# Força LF para arquivos de código/notebooks
+*.py text eol=lf
+*.ipynb text eol=lf
+*.sql text eol=lf
+*.md text eol=lf
+*.json text eol=lf
