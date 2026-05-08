@@ -33,6 +33,9 @@ data/bronze/
 .env.*
 secrets.yaml
 *credentials*
+token*.txt
+*token*
+*secret*
 
 # ─── IDEs e sistema operacional ───────────────────────────
 .vscode/settings.json
