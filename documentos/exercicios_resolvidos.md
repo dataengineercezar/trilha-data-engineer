@@ -59,6 +59,20 @@
   - [GitHub Actions — CI básico](#github-actions--ci-básico)
   - [Fluxo profissional completo](#fluxo-profissional-completo)
   - [Exercícios Resolvidos — Git](#exercícios-resolvidos--git)
+- [DOCKER PARA DATA ENGINEERING](#docker-para-data-engineering)
+  - [Por que Docker para Data Engineering?](#por-que-docker-para-data-engineering)
+  - [Conceitos fundamentais](#conceitos-fundamentais)
+  - [Arquitetura interna do Docker](#arquitetura-interna-do-docker)
+  - [Imagens: camadas, cache e otimização](#imagens-camadas-cache-e-otimização)
+  - [Dockerfile: instrução por instrução](#dockerfile-instrução-por-instrução)
+  - [Multi-stage build](#multi-stage-build)
+  - [Volumes: persistência de dados](#volumes-persistência-de-dados)
+  - [Networks: comunicação entre containers](#networks-comunicação-entre-containers)
+  - [Environment variables e segurança](#environment-variables-e-segurança)
+  - [docker-compose: orquestração local](#docker-compose-orquestração-local)
+  - [Docker Hub: publicar imagens](#docker-hub-publicar-imagens)
+  - [Padrões de produção para DE](#padrões-de-produção-para-de)
+  - [Exercícios Resolvidos — Docker](#exercícios-resolvidos--docker)
 
 ---
 
@@ -3962,3 +3976,771 @@ git commit -m "fix: resolve merge conflict in duckdb title"
 *   82663a4 (tag: v0.1.0) feat(exercises): merge duckdb ex5 branch
 ```
 O padrão "diamante duplo" é o histório visual de um conflito resolvido — duas branches divergindo do mesmo ponto e convergindo de volta para a main.
+
+---
+
+---
+
+# DOCKER PARA DATA ENGINEERING
+
+> Docker resolve o problema fundamental de Data Engineering: **"funciona na minha máquina"**.
+> Com containers, o ambiente de desenvolvimento é idêntico ao de produção.
+
+---
+
+## Por que Docker para Data Engineering?
+
+Um pipeline de dados tem muitas dependências: versão do Python, bibliotecas (pandas, polars, duckdb), bancos de dados (PostgreSQL, Redis), ferramentas (Airflow, dbt, Spark). Sem Docker, gerenciar isso em equipe é caótico.
+
+### Problemas que Docker resolve
+
+| Problema | Sem Docker | Com Docker |
+|---|---|---|
+| Versão de Python diferente | `ModuleNotFoundError`, comportamentos estranhos | Imagem define `python:3.14.2` — fixo |
+| Biblioteca com versão errada | `AttributeError` em produção | `requirements.txt` dentro da imagem |
+| Banco de dados local vs produção | Configurações manuais diferentes | `docker-compose up` sobe o mesmo Postgres |
+| Onboarding de novo dev | Horas instalando dependências | `docker compose up` — pronto em minutos |
+| Deploy em qualquer cloud | Scripts de instalação frágeis | Mesma imagem roda em AWS/GCP/Azure |
+
+### Docker vs máquina virtual
+
+```
+Máquina Virtual:                  Container Docker:
+┌─────────────────────┐           ┌─────────────────────┐
+│ App                 │           │ App                 │
+│ Binários/Libs       │           │ Binários/Libs       │
+│ Guest OS (Ubuntu)   │           ├─────────────────────┤
+│ Hypervisor          │           │ Docker Engine       │  ← compartilha o kernel do host
+│ Host OS             │           │ Host OS             │
+│ Hardware            │           │ Hardware            │
+└─────────────────────┘           └─────────────────────┘
+  ~GBs, boot em minutos             ~MBs, boot em < 1s
+```
+
+Containers compartilham o **kernel do sistema operacional host** — não virtualizam hardware. Por isso são leves e rápidos.
+
+---
+
+## Conceitos fundamentais
+
+### Glossário essencial
+
+| Termo | O que é | Analogia |
+|---|---|---|
+| **Image** | Template imutável com tudo para rodar a app | Receita de bolo |
+| **Container** | Instância rodando de uma imagem | Bolo assado |
+| **Dockerfile** | Script de instruções para construir uma imagem | Lista de ingredientes e modo de preparo |
+| **Registry** | Repositório de imagens (Docker Hub, ECR, GCR) | GitHub para imagens |
+| **Volume** | Diretório do host montado dentro do container | Pen drive plugado no container |
+| **Network** | Rede virtual que conecta containers | Switch virtual |
+| **docker-compose** | Ferramenta para definir múltiplos containers em um arquivo YAML | Orquestrador local |
+
+### Ciclo de vida de um container
+
+```
+Dockerfile  ──build──►  Image  ──run──►  Container  ──stop──►  Stopped Container
+                          ↑                                              │
+                          │                               ──rm──►  [deletado]
+                     docker pull
+                     (do Registry)
+```
+
+### Comandos essenciais
+
+```powershell
+# ─── Imagens ──────────────────────────────────────────────────────────────────
+docker build -t minha-app:1.0 .       # Construir imagem a partir do Dockerfile no diretório atual
+docker images                          # Listar imagens locais
+docker rmi minha-app:1.0              # Remover imagem
+docker pull python:3.14-slim           # Baixar imagem do Docker Hub
+
+# ─── Containers ───────────────────────────────────────────────────────────────
+docker run python:3.14-slim python -c "print('ok')"   # Rodar e deletar automaticamente
+docker run -d --name meu-postgres -p 5432:5432 postgres:16   # Rodar em background
+docker run -it python:3.14-slim bash   # Rodar interativamente com terminal
+
+docker ps                              # Containers rodando
+docker ps -a                           # Todos (incluindo parados)
+docker stop meu-postgres              # Parar container (graceful)
+docker kill meu-postgres              # Parar container (força imediata)
+docker rm meu-postgres                # Remover container parado
+docker rm -f meu-postgres             # Parar e remover em um comando
+
+# ─── Inspeção e debug ─────────────────────────────────────────────────────────
+docker logs meu-postgres              # Ver logs do container
+docker logs -f meu-postgres           # Seguir logs em tempo real
+docker exec -it meu-postgres bash     # Abrir shell dentro de container rodando
+docker inspect meu-postgres           # JSON com todos os detalhes do container
+docker stats                          # CPU/memória em tempo real (como htop)
+
+# ─── Sistema ──────────────────────────────────────────────────────────────────
+docker system prune                    # Limpar imagens/containers/volumes não usados
+docker system prune -a                 # Limpar tudo (inclusive imagens sem container)
+docker system df                       # Ver espaço usado pelo Docker
+```
+
+---
+
+## Arquitetura interna do Docker
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Docker CLI                           │
+│              (docker build, docker run...)              │
+└──────────────────────┬──────────────────────────────────┘
+                       │ REST API / Unix socket
+                       ▼
+┌─────────────────────────────────────────────────────────┐
+│                  Docker Daemon (dockerd)                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌───────────────┐ │
+│  │ Image Store  │  │  Container   │  │    Network    │ │
+│  │ (layers)     │  │  Runtime     │  │    Manager    │ │
+│  └──────────────┘  └──────────────┘  └───────────────┘ │
+└──────────────────────┬──────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────┐
+│              containerd + runc                          │
+│           (execução real no kernel Linux)               │
+└─────────────────────────────────────────────────────────┘
+```
+
+**O Daemon** recebe comandos da CLI via socket Unix (`/var/run/docker.sock`), gerencia imagens, containers, volumes e redes. **containerd** faz o gerenciamento de ciclo de vida do container. **runc** executa o container de fato no kernel usando *namespaces* (isolamento de processos) e *cgroups* (limites de recursos).
+
+### Namespaces — isolamento
+
+| Namespace | O que isola |
+|---|---|
+| `pid` | Processos (container só vê seus próprios processos) |
+| `net` | Interfaces de rede |
+| `mnt` | Filesystems montados |
+| `uts` | Hostname |
+| `ipc` | IPC (inter-process communication) |
+| `user` | UIDs/GIDs (user namespace mapping) |
+
+### cgroups — limites de recursos
+
+```powershell
+# Limitar memória e CPU de um container
+docker run --memory="512m" --cpus="1.5" python:3.14-slim python script.py
+#            ↑ max 512MB RAM       ↑ até 1.5 núcleos de CPU
+```
+
+---
+
+## Imagens: camadas, cache e otimização
+
+### Camadas (layers)
+
+Uma imagem Docker é um **stack de camadas imutáveis**. Cada instrução no Dockerfile cria uma camada:
+
+```dockerfile
+FROM python:3.14-slim          # Camada 1: imagem base (~100MB)
+RUN pip install polars          # Camada 2: polars instalado (~50MB)
+COPY . /app                     # Camada 3: código da app (~1MB)
+```
+
+```
+Image view:
+┌─────────────────────────────┐  ← Camada 3: COPY . /app  (read-only)
+├─────────────────────────────┤  ← Camada 2: pip install  (read-only)
+├─────────────────────────────┤  ← Camada 1: python:3.14-slim (read-only)
+└─────────────────────────────┘
+
+Container (ao rodar):
+┌─────────────────────────────┐  ← Container layer  (read-write)
+├─────────────────────────────┤  ← Camada 3 (read-only)
+├─────────────────────────────┤  ← Camada 2 (read-only)
+├─────────────────────────────┤  ← Camada 1 (read-only)
+└─────────────────────────────┘
+```
+
+**Copy-on-Write**: arquivos das camadas read-only são copiados para a camada do container apenas quando modificados. Isso torna containers rápidos e eficientes em memória (múltiplos containers compartilham as camadas base).
+
+### Cache de build
+
+Docker reutiliza camadas em cache se a instrução não mudou **e** nenhuma camada anterior mudou. Isso torna `docker build` rápido em iterações.
+
+**Ordem importa** — coloque o que muda mais para o **final**:
+
+```dockerfile
+# ❌ RUIM: toda mudança de código invalida o cache do pip install
+FROM python:3.14-slim
+COPY . /app                     # se qualquer arquivo mudar → cache inválido aqui
+RUN pip install -r requirements.txt  # executa TODA VEZ mesmo sem mudança de deps
+
+# ✅ BOM: requirements só reinstala quando requirements.txt mudar
+FROM python:3.14-slim
+COPY requirements.txt /app/requirements.txt   # muda raramente
+RUN pip install -r /app/requirements.txt       # usa cache na maioria das builds
+COPY . /app                                    # muda frequentemente — vai para o final
+```
+
+### .dockerignore
+
+Como `.gitignore`, mas para o build context enviado ao daemon:
+
+```dockerignore
+# .dockerignore na raiz do projeto
+.git/
+.venv/
+__pycache__/
+*.pyc
+.env*
+*.csv
+*.parquet
+*.log
+.ipynb_checkpoints/
+```
+
+Sem `.dockerignore`, `docker build` envia tudo para o daemon (incluindo `.git/` e `.venv/` que podem ter centenas de MBs).
+
+---
+
+## Dockerfile: instrução por instrução
+
+```dockerfile
+# ─── Imagem base ──────────────────────────────────────────────────────────────
+FROM python:3.14-slim
+# python:3.14-slim = imagem oficial Python 3.14 baseada em Debian Bookworm,
+# sem pacotes desnecessários (slim). ~120MB vs ~1GB do python:3.14 completo.
+# Outras variantes:
+#   python:3.14-alpine    → ~50MB, mas usa musl libc (problemas com pacotes C)
+#   python:3.14-bookworm  → Debian completo, mais compatível
+
+# ─── Metadados ────────────────────────────────────────────────────────────────
+LABEL maintainer="cezar@example.com"
+LABEL version="1.0"
+LABEL description="Pipeline de dados ETL"
+
+# ─── Variáveis de ambiente ────────────────────────────────────────────────────
+ENV PYTHONUNBUFFERED=1
+# PYTHONUNBUFFERED=1 → logs aparecem imediatamente (sem buffer)
+# Essencial para ver output de scripts Python em tempo real nos logs do container
+
+ENV PYTHONDONTWRITEBYTECODE=1
+# Evita criar arquivos .pyc (não necessários em container)
+
+ENV APP_HOME=/app
+
+# ─── Usuário não-root ─────────────────────────────────────────────────────────
+# Por padrão containers rodam como root — má prática de segurança
+RUN groupadd --gid 1001 appuser \
+    && useradd --uid 1001 --gid appuser --shell /bin/bash --create-home appuser
+
+# ─── Diretório de trabalho ────────────────────────────────────────────────────
+WORKDIR $APP_HOME
+# Cria e define /app como diretório padrão — todos os COPY/RUN subsequentes são relativos a ele
+
+# ─── Dependências do sistema ──────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+# --no-install-recommends: instala apenas o pacote, sem dependências extras
+# rm -rf /var/lib/apt/lists/*: apaga o cache do apt → reduz tamanho da camada
+
+# ─── Dependências Python ──────────────────────────────────────────────────────
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+# --no-cache-dir: não salva cache do pip dentro da imagem → menor tamanho
+
+# ─── Código da aplicação ──────────────────────────────────────────────────────
+COPY --chown=appuser:appuser . .
+# --chown: define dono dos arquivos copiados (não root)
+
+# ─── Trocar para usuário não-root ─────────────────────────────────────────────
+USER appuser
+
+# ─── Porta (documentação) ─────────────────────────────────────────────────────
+EXPOSE 8080
+# EXPOSE é apenas documentação — não publica a porta automaticamente
+# A publicação real acontece com docker run -p 8080:8080
+
+# ─── Healthcheck ──────────────────────────────────────────────────────────────
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# ─── Entrypoint vs CMD ────────────────────────────────────────────────────────
+ENTRYPOINT ["python"]
+CMD ["pipeline.py"]
+# ENTRYPOINT ["python"] + CMD ["pipeline.py"]
+#   → executa: python pipeline.py
+#   → pode sobrescrever CMD: docker run imagem outro_script.py
+#   → não pode sobrescrever ENTRYPOINT (a não ser com --entrypoint)
+
+# Alternativa para scripts:
+# CMD ["python", "pipeline.py"]      # sem ENTRYPOINT — mais simples
+# ENTRYPOINT ["./entrypoint.sh"]     # script de inicialização
+```
+
+---
+
+## Multi-stage build
+
+Técnica que usa múltiplos `FROM` no mesmo Dockerfile. O estágio final copia apenas os artefatos necessários, descartando ferramentas de build.
+
+### Por que usar
+
+Um pipeline Python tem dependências que precisam ser compiladas (pyarrow, grpcio, cryptography), mas o container final não precisa do compilador C, headers de sistema, etc.
+
+```
+Sem multi-stage:  imagem final ~800MB (compilador + código + libs)
+Com multi-stage:  imagem final ~150MB (apenas código + libs compiladas)
+```
+
+### Exemplo para Data Engineering
+
+```dockerfile
+# ─── Estágio 1: builder ───────────────────────────────────────────────────────
+FROM python:3.14-slim AS builder
+
+# Instala dependências de compilação
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Cria virtualenv isolado para copiar no próximo estágio
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+#   ↑ aqui compila pyarrow, cryptography, etc. com o gcc disponível
+
+# ─── Estágio 2: runtime ───────────────────────────────────────────────────────
+FROM python:3.14-slim AS runtime
+# Nova imagem limpa — sem gcc, sem headers, sem cache de compilação
+
+# Copia apenas o virtualenv compilado do estágio anterior
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Usuário não-root
+RUN groupadd --gid 1001 appuser \
+    && useradd --uid 1001 --gid appuser --create-home appuser
+
+WORKDIR /app
+COPY --chown=appuser:appuser pipeline/ ./pipeline/
+COPY --chown=appuser:appuser main.py .
+
+USER appuser
+CMD ["python", "main.py"]
+```
+
+---
+
+## Volumes: persistência de dados
+
+Containers são **efêmeros** — ao removê-los, todos os dados dentro são perdidos. Volumes resolvem isso.
+
+### Tipos
+
+| Tipo | Sintaxe | Uso |
+|---|---|---|
+| **Named volume** | `-v meus-dados:/app/data` | Dados persistentes gerenciados pelo Docker |
+| **Bind mount** | `-v /host/path:/container/path` | Sincronizar código em desenvolvimento |
+| **tmpfs** | `--tmpfs /tmp` | Dados temporários na RAM (não persistentes) |
+
+### Named volumes
+
+```powershell
+# Criar volume
+docker volume create postgres-data
+
+# Usar volume em container
+docker run -d \
+    --name postgres-estudo \
+    -v postgres-data:/var/lib/postgresql/data \
+    -e POSTGRES_PASSWORD=estudo123 \
+    postgres:16
+
+# Listar volumes
+docker volume ls
+
+# Ver onde está salvo no host
+docker volume inspect postgres-data
+# "Mountpoint": "/var/lib/docker/volumes/postgres-data/_data"
+
+# Remover volume (⚠️ apaga dados)
+docker volume rm postgres-data
+
+# Remover volumes não usados
+docker volume prune
+```
+
+### Bind mounts — desenvolvimento local
+
+```powershell
+# Montar código local dentro do container para desenvolvimento
+# Mudanças nos arquivos do host refletem imediatamente no container
+
+docker run -d \
+    --name pipeline-dev \
+    -v ${PWD}/pipeline:/app/pipeline \
+    -v ${PWD}/data:/app/data \
+    minha-app:latest python -m watchdog pipeline/
+
+# No docker-compose (mais comum em desenvolvimento):
+# volumes:
+#   - ./pipeline:/app/pipeline   # bind mount
+#   - ./data:/app/data
+```
+
+---
+
+## Networks: comunicação entre containers
+
+Por padrão containers são isolados. Networks permitem que eles se comuniquem entre si.
+
+### Tipos de network
+
+| Driver | Quando usar |
+|---|---|
+| `bridge` | Padrão — containers na mesma máquina se comunicam pelo nome |
+| `host` | Container compartilha a rede do host (performance, menos seguro) |
+| `none` | Container completamente isolado da rede |
+| `overlay` | Docker Swarm — múltiplas máquinas |
+
+### Comunicação entre containers
+
+```powershell
+# Criar network
+docker network create trilha-network
+
+# Rodar Postgres na network
+docker run -d \
+    --name postgres-estudo \
+    --network trilha-network \
+    -e POSTGRES_PASSWORD=estudo123 \
+    postgres:16
+
+# Rodar app Python na mesma network
+docker run -d \
+    --name pipeline-app \
+    --network trilha-network \
+    -e DB_HOST=postgres-estudo \   # ← usa o NAME do container como hostname!
+    -e DB_PORT=5432 \
+    minha-app:latest
+
+# Containers na mesma network se resolvem pelo nome → postgres-estudo:5432
+# Não precisa expor portas com -p quando comunicação é interna
+```
+
+```powershell
+# Inspecionar network
+docker network inspect trilha-network
+
+# Remover networks não usadas
+docker network prune
+```
+
+---
+
+## Environment variables e segurança
+
+### Formas de passar variáveis
+
+```powershell
+# 1. Flag -e (simples, mas visível no docker ps e histórico do shell)
+docker run -e DB_PASSWORD=estudo123 minha-app
+
+# 2. Arquivo .env (nunca commitar no Git!)
+docker run --env-file .env minha-app
+
+# 3. docker-compose com .env (mais comum em desenvolvimento)
+# compose lê automaticamente o .env na raiz do projeto
+```
+
+### No Dockerfile — nunca hardcode secrets
+
+```dockerfile
+# ❌ ERRADO — senha fica visível em qualquer layer da imagem
+RUN pip install --extra-index-url https://user:SENHA@private.pypi.org/simple/ pacote
+
+# ✅ CORRETO — usar ARG para build-time secrets (não persiste na imagem)
+ARG PYPI_TOKEN
+RUN pip install --extra-index-url https://__token__:${PYPI_TOKEN}@private.pypi.org/simple/ pacote
+# Passar na build: docker build --build-arg PYPI_TOKEN=$TOKEN .
+
+# ✅ MELHOR — Docker BuildKit secrets (nunca aparece em nenhuma layer)
+# syntax=docker/dockerfile:1
+RUN --mount=type=secret,id=pypi_token \
+    pip install --extra-index-url https://__token__:$(cat /run/secrets/pypi_token)@... pacote
+```
+
+### Arquitetura de segredos em produção
+
+```
+Desenvolvimento:    .env file (no .gitignore)
+CI/CD:              GitHub Actions Secrets → variável de ambiente
+Produção (AWS):     AWS Secrets Manager ou Parameter Store
+Produção (k8s):     Kubernetes Secrets
+```
+
+---
+
+## docker-compose: orquestração local
+
+docker-compose (ou `docker compose` v2) define múltiplos containers, networks e volumes em um arquivo YAML declarativo.
+
+### Estrutura completa — projeto DE com Postgres + Adminer + Python
+
+```yaml
+# docker-compose.yml
+version: "3.9"
+
+services:
+
+  # ─── Banco de dados ──────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16
+    container_name: postgres-trilha
+    environment:
+      POSTGRES_DB: trilha
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD}     # lê do arquivo .env
+    ports:
+      - "5432:5432"                          # host:container
+    volumes:
+      - postgres-data:/var/lib/postgresql/data    # named volume (persistente)
+      - ./sql/init:/docker-entrypoint-initdb.d    # scripts SQL executados na 1ª inicialização
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - trilha-network
+    restart: unless-stopped
+
+  # ─── Interface web para Postgres ─────────────────────────────────────────────
+  adminer:
+    image: adminer:4.8.1
+    container_name: adminer-trilha
+    ports:
+      - "8080:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy    # espera o healthcheck do postgres passar
+    networks:
+      - trilha-network
+    restart: unless-stopped
+
+  # ─── App Python (pipeline ETL) ────────────────────────────────────────────────
+  pipeline:
+    build:
+      context: .                      # usa Dockerfile na raiz
+      dockerfile: Dockerfile
+      target: runtime                 # estágio do multi-stage build
+    container_name: pipeline-trilha
+    environment:
+      DB_HOST: postgres               # nome do service no compose = hostname
+      DB_PORT: 5432
+      DB_NAME: trilha
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD}
+      PYTHONUNBUFFERED: 1
+    volumes:
+      - ./data:/app/data              # bind mount para output dos pipelines
+      - ./pipeline:/app/pipeline      # bind mount para desenvolvimento (código sincronizado)
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - trilha-network
+    command: python main.py           # sobrescreve CMD do Dockerfile
+
+# ─── Volumes ───────────────────────────────────────────────────────────────────
+volumes:
+  postgres-data:
+    driver: local
+
+# ─── Networks ──────────────────────────────────────────────────────────────────
+networks:
+  trilha-network:
+    driver: bridge
+```
+
+### Arquivo .env (nunca commitar!)
+
+```env
+# .env — na raiz do projeto
+DB_PASSWORD=estudo123
+POSTGRES_VERSION=16
+```
+
+### Comandos essenciais do docker-compose
+
+```powershell
+# Subir todos os services (em background)
+docker compose up -d
+
+# Subir e reconstruir imagens (após mudança no Dockerfile ou código)
+docker compose up -d --build
+
+# Ver logs de todos os services
+docker compose logs -f
+
+# Ver logs de um service específico
+docker compose logs -f pipeline
+
+# Ver status dos containers
+docker compose ps
+
+# Parar todos os containers (mantém volumes e networks)
+docker compose stop
+
+# Parar e remover containers (mantém volumes — dados preservados)
+docker compose down
+
+# Parar e remover containers E volumes (⚠️ apaga dados do banco)
+docker compose down -v
+
+# Executar comando em service rodando
+docker compose exec postgres psql -U postgres -d trilha
+
+# Escalar um service (múltiplas instâncias)
+docker compose up -d --scale pipeline=3
+
+# Ver configuração final (com variáveis substituídas)
+docker compose config
+```
+
+---
+
+## Docker Hub: publicar imagens
+
+### Autenticação e push
+
+```powershell
+# Login (pede usuário e senha/token)
+docker login
+
+# Ou com token (mais seguro — usar Access Token do Docker Hub)
+docker login -u MEU_USUARIO --password-stdin
+# → colar o token e pressionar Enter, depois Ctrl+Z (Windows)
+
+# Taguear a imagem com o namespace do Docker Hub
+docker tag minha-app:1.0 meu-usuario/trilha-de-pipeline:1.0
+docker tag minha-app:1.0 meu-usuario/trilha-de-pipeline:latest
+
+# Push para o registry
+docker push meu-usuario/trilha-de-pipeline:1.0
+docker push meu-usuario/trilha-de-pipeline:latest
+
+# Pull de qualquer máquina
+docker pull meu-usuario/trilha-de-pipeline:latest
+```
+
+### Boas práticas de versionamento de imagens
+
+```
+meu-usuario/pipeline:latest      → sempre a versão mais recente (não recomendado em produção)
+meu-usuario/pipeline:1.0.0       → versão SemVer estável
+meu-usuario/pipeline:1.0.0-slim  → variante slim (menor)
+meu-usuario/pipeline:sha-06d62f9 → commit hash do Git (rastreabilidade total)
+```
+
+### Automatizar com GitHub Actions
+
+```yaml
+# .github/workflows/docker-publish.yml
+name: Build and Push Docker Image
+
+on:
+  push:
+    tags: ["v*"]          # publica ao criar uma tag v1.0.0
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/trilha-de-pipeline:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/trilha-de-pipeline:${{ github.ref_name }}
+```
+
+---
+
+## Padrões de produção para DE
+
+### Pattern 1: Pipeline isolado por execução
+
+```dockerfile
+# Cada execução do pipeline cria um container novo, roda e morre
+# Ideal para pipelines batch (Airflow tasks, AWS Batch, GCP Cloud Run Jobs)
+
+FROM python:3.14-slim AS builder
+# ... (multi-stage igual ao anterior)
+
+FROM python:3.14-slim AS runtime
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+WORKDIR /app
+COPY pipeline/ ./pipeline/
+COPY main.py .
+USER appuser
+ENTRYPOINT ["python", "main.py"]
+# → docker run pipeline:1.0 --date=2026-05-08 --source=s3://bucket/...
+```
+
+### Pattern 2: Ambiente de desenvolvimento completo
+
+```yaml
+# docker-compose.dev.yml — sobrescreve o compose principal em desenvolvimento
+services:
+  pipeline:
+    build:
+      target: builder               # usa estágio com devdeps (pytest, black, etc.)
+    volumes:
+      - .:/app                      # código completo montado (hot-reload)
+    command: sleep infinity         # container fica rodando aguardando comandos
+    # → docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+    # → docker compose exec pipeline pytest
+    # → docker compose exec pipeline python -m ipykernel install
+```
+
+### Pattern 3: Healthchecks e restart policies
+
+```yaml
+services:
+  pipeline:
+    restart: unless-stopped     # reinicia automaticamente se crashar (exceto se parado manualmente)
+    # Outras opções:
+    # restart: no              → não reinicia (default)
+    # restart: always          → sempre reinicia (inclusive após docker daemon restart)
+    # restart: on-failure:3    → reinicia até 3 vezes em caso de erro
+```
+
+### Tamanho de imagem — referência para Python DE
+
+| Imagem base | Tamanho aprox. | Indicado para |
+|---|---|---|
+| `python:3.14` | ~1.0 GB | Nunca — muito grande |
+| `python:3.14-slim` | ~120 MB | Maioria dos casos |
+| `python:3.14-alpine` | ~50 MB | Apenas apps simples (problemas com libs C) |
+| Multi-stage (slim) | ~200-400 MB | Apps com deps compiladas (pyarrow, grpcio) |
+
+---
+
+## Exercícios Resolvidos — Docker
+
+*(Será preenchido durante os exercícios da Semana 8)*
+
+---
