@@ -40,15 +40,24 @@
   - [Lazy API: scan e collect](#lazy-api-scan-e-collect)
   - [Exercícios Resolvidos — Polars](#exercícios-resolvidos--polars)
 - [GIT PROFISSIONAL](#git-profissional)
-  - [Configuração inicial](#configuração-inicial)
-  - [Criando repositório local](#criando-repositório-local)
-  - [.gitignore para Python/Data Engineering](#gitignore-para-pythondata-engineering)
+  - [Como o Git funciona internamente](#como-o-git-funciona-internamente)
+  - [Configuração inicial e níveis de config](#configuração-inicial-e-níveis-de-config)
+  - [As três zonas: working directory, staging e repositório](#as-três-zonas-working-directory-staging-e-repositório)
+  - [.gitignore e .gitattributes](#gitignore-e-gitattributes)
   - [Conventional Commits](#conventional-commits)
-  - [Branches: estratégias e comandos](#branches-estratégias-e-comandos)
-  - [Rebase vs Merge](#rebase-vs-merge)
+  - [Branches: internamente e estratégias](#branches-internamente-e-estratégias)
+  - [Merge deep dive](#merge-deep-dive)
+  - [Rebase deep dive](#rebase-deep-dive)
+  - [Resolvendo conflitos](#resolvendo-conflitos)
+  - [git reset, git revert e git restore — os três desfazeres](#git-reset-git-revert-e-git-restore--os-três-desfazeres)
   - [git stash](#git-stash)
+  - [git cherry-pick](#git-cherry-pick)
+  - [git bisect — encontrar o commit que introduziu um bug](#git-bisect--encontrar-o-commit-que-introduziu-um-bug)
+  - [git reflog — a rede de segurança](#git-reflog--a-rede-de-segurança)
   - [Tags e Semantic Versioning](#tags-e-semantic-versioning)
-  - [Criando repositório remoto no GitHub](#criando-repositório-remoto-no-github)
+  - [GitHub: remote, autenticação e PRs](#github-remote-autenticação-e-prs)
+  - [GitHub Actions — CI básico](#github-actions--ci-básico)
+  - [Fluxo profissional completo](#fluxo-profissional-completo)
   - [Exercícios Resolvidos — Git](#exercícios-resolvidos--git)
 
 ---
@@ -2382,35 +2391,1315 @@ top_por_cliente = (
 ⚠️ Nota: `vendas_faturadas` inclui todos os status. Decida intencionalmente se quer filtrar por `entregue` antes.
 
 ---
-
 # GIT PROFISSIONAL
 
 ---
 
-## Configuração inicial
+## Como o Git funciona internamente
 
-Antes de criar qualquer repositório, configure identidade global uma única vez por máquina:
+Entender o modelo de objetos do Git é o que separa quem "usa git" de quem "entende git". Todos os comandos (`commit`, `merge`, `rebase`, `reset`) são operações sobre esse modelo.
+
+### O banco de dados de objetos — `.git/objects/`
+
+Git é um **banco de dados de objetos endereçados por conteúdo**. Cada objeto é identificado pelo SHA-1 (40 caracteres hex) do seu conteúdo. Existem exatamente 4 tipos de objeto:
+
+```
+┌──────────┬──────────────────────────────────────────────────────────────────┐
+│  BLOB    │ Conteúdo de um arquivo. Não guarda nome nem permissão — só bytes. │
+│          │ SHA-1(conteúdo) → o mesmo arquivo em dois lugares tem o MESMO sha │
+├──────────┼──────────────────────────────────────────────────────────────────┤
+│  TREE    │ Diretório: lista de (modo, tipo, sha, nome). Aponta para blobs   │
+│          │ e outras trees. Representa um snapshot da estrutura de pastas.   │
+├──────────┼──────────────────────────────────────────────────────────────────┤
+│  COMMIT  │ Aponta para uma TREE (snapshot), para commits pai (parent),      │
+│          │ e guarda: autor, committer, timestamp, mensagem.                 │
+├──────────┼──────────────────────────────────────────────────────────────────┤
+│  TAG     │ Objeto anotado: aponta para um commit, inclui mensagem e autor.  │
+│          │ Tag leve é só um arquivo de referência (não é objeto).           │
+└──────────┴──────────────────────────────────────────────────────────────────┘
+```
+
+### Visualizando o modelo — um commit na prática
+
+```
+commit 82663a4
+  │  tree: f1e2d3c  ←── snapshot do diretório raiz neste momento
+  │  parent: d25cb99
+  │  author: Cézar
+  │  message: "feat(exercises): merge duckdb ex5 branch"
+  │
+  └─ tree f1e2d3c (raiz)
+       ├── blob a1b2c3  README.md
+       ├── blob d4e5f6  .gitignore
+       └── tree g7h8i9  exercicios/
+             ├── blob j1k2l3  ex1.py
+             └── blob m4n5o6  ex5_duckdb.md
+```
+
+**Implicações importantes:**
+```
+1. Git não guarda deltas (diff) entre versões — guarda snapshots completos.
+   (Na prática usa compressão com packfiles, mas o modelo conceitual é snapshot)
+
+2. Se dois arquivos têm o mesmo conteúdo em qualquer commit, compartilham o mesmo blob.
+   Zero duplicação de dados.
+
+3. Um commit é IMUTÁVEL. Mudar qualquer coisa (mensagem, conteúdo, parent) produz
+   um SHA diferente — por isso rebase "reescreve" commits (cria novos objetos).
+
+4. Renames são detectados por similaridade de conteúdo, não rastreados explicitamente.
+```
+
+### O que existe em `.git/`
+
+```
+.git/
+├── HEAD           → aponta para a branch atual (ref: refs/heads/main)
+├── config         → configurações locais do repositório
+├── index          → staging area (arquivo binário)
+├── objects/       → banco de dados de todos os objetos (blob/tree/commit/tag)
+│   ├── pack/      → objetos comprimidos em packfiles
+│   └── ab/cd...  → objetos individuais (primeiros 2 chars = subdiretório)
+├── refs/
+│   ├── heads/     → branches locais (arquivos com o SHA do último commit)
+│   │   └── main   → conteúdo: "82663a4..." (simplesmente o hash do commit)
+│   ├── remotes/   → branches remotas rastreadas
+│   │   └── origin/main
+│   └── tags/      → tags leves
+└── logs/
+    ├── HEAD       → reflog do HEAD
+    └── refs/heads/main  → reflog da branch main
+```
 
 ```powershell
-git config --global user.name  "Seu Nome"
-git config --global user.email "seu@email.com"
+# Inspecionar qualquer objeto do Git
+git cat-file -t 82663a4   # tipo do objeto (commit, tree, blob, tag)
+git cat-file -p 82663a4   # conteúdo legível do objeto
 
-# Editor padrão para mensagens de commit (recomendado: VS Code)
-git config --global core.editor "code --wait"
+# Ver a tree (snapshot) de um commit
+git ls-tree HEAD
+git ls-tree -r HEAD       # recursivo (todos os arquivos)
 
-# Estratégia de rebase ao fazer pull (evita merge commits automáticos)
-git config --global pull.rebase true
+# Ver o SHA de um arquivo específico
+git hash-object exercicios/ex1.py
+```
 
-# Padronizar quebra de linha no Windows
-git config --global core.autocrlf true
+### Branches e HEAD — ponteiros, não cópias
 
-# Verificar configurações
-git config --global --list
+```
+Uma branch é apenas um arquivo em .git/refs/heads/ contendo o SHA de um commit.
+HEAD é um arquivo contendo qual branch está ativa: "ref: refs/heads/main"
+
+Criar uma branch é O(1) — criar um arquivo de 41 bytes.
+Trocar de branch é O(arquivos modificados) — atualizar o working directory.
+
+HEAD → main → 82663a4 (commit) → f1e2d3c (tree) → ...
+```
+
+**Detached HEAD state:**
+```powershell
+# Acontece quando você faz checkout de um commit (não de uma branch)
+git checkout 82663a4
+
+# HEAD agora aponta diretamente para o commit, não para uma branch
+# commits feitos aqui FICAM ÓRFÃOS — não têm branch apontando para eles
+# serão coletados pelo garbage collector após ~30 dias
+
+# Para preservar trabalho feito em detached HEAD:
+git switch -c nova-branch    # cria branch apontando para o commit atual
 ```
 
 ---
 
-## Criando repositório local
+## Configuração inicial e níveis de config
+
+Git tem três níveis de configuração — cada nível sobrescreve o anterior:
+
+```
+system  → C:\Program Files\Git\etc\gitconfig     (para todos os usuários da máquina)
+global  → C:\Users\Cézar\.gitconfig              (para o usuário atual)
+local   → d:\3_Estudos\TRILHA_DE\.git\config     (para este repositório)
+```
+
+```powershell
+# Verificar qual arquivo está sendo lido para cada configuração
+git config --show-origin user.email
+
+# Configurações essenciais (global — uma vez por máquina)
+git config --global user.name  "Cézar Augusto Meira Carmo"
+git config --global user.email "dataengineercezar@gmail.com"
+git config --global core.editor "code --wait"
+git config --global pull.rebase true          # pull = fetch + rebase (não merge)
+git config --global core.autocrlf true        # Windows: normaliza line endings
+git config --global credential.helper manager # Windows Credential Manager
+git config --global init.defaultBranch main   # branch padrão ao git init
+
+# Configuração local — sobrescreve global para este repo
+git config --local user.email "trabalho@empresa.com"
+
+# Ver todas as configurações ativas com origem
+git config --list --show-origin
+```
+
+### Aliases — atalhos para comandos frequentes
+
+```powershell
+git config --global alias.st   "status -s"
+git config --global alias.lg   "log --oneline --graph --all"
+git config --global alias.last "log -1 HEAD --stat"
+git config --global alias.undo "reset HEAD~1 --mixed"    # desfaz último commit, mantém arquivos
+git config --global alias.aliases "config --get-regexp alias"
+
+# Uso
+git st          # git status -s (formato compacto)
+git lg          # grafo visual de todas as branches
+git last        # detalhes do último commit
+git undo        # desfaz o commit mais recente (não perde as edições)
+```
+
+---
+
+## As três zonas: working directory, staging e repositório
+
+```
+┌─────────────────────┐    git add    ┌──────────────────┐    git commit    ┌──────────────┐
+│  Working Directory  │  ──────────►  │  Staging (Index) │  ─────────────►  │  Repository  │
+│  (arquivos no disco)│               │  (próximo commit)│                   │  (.git/hist) │
+└─────────────────────┘               └──────────────────┘                   └──────────────┘
+         ▲                                                                           │
+         │                          git restore                                     │
+         └──────────────────── git restore --staged ◄───────────────────────────────┘
+                                    git reset
+```
+
+### Navegação entre zonas
+
+```powershell
+# Ver estado das três zonas
+git status          # verbose
+git status -s       # compacto: XY filename (X=staging, Y=working)
+                    # M = modified, A = added, D = deleted, ? = untracked, ! = ignored
+
+# Ver diffs
+git diff                      # working directory vs staging (o que ainda NÃO foi staged)
+git diff --staged             # staging vs último commit (o que VAI entrar no commit)
+git diff HEAD                 # working directory vs último commit (tudo pendente)
+git diff main..feat/branch    # diferença entre duas branches
+git diff v0.1.0..HEAD         # diferença desde a tag v0.1.0
+
+# Formatos úteis de diff
+git diff --stat               # resumo: quantos arquivos e linhas mudaram
+git diff --word-diff          # diff palavra a palavra (ótimo para texto/docs)
+git diff --color-words        # colorido por palavra
+```
+
+### Staging interativo — `git add -p`
+
+Permite adicionar apenas **partes** de um arquivo ao commit — essencial para commits atômicos e semânticos:
+
+```powershell
+git add -p exercicios/ex5_duckdb.md
+
+# Git mostra cada "hunk" (bloco de mudanças) e pergunta:
+# Stage this hunk [y,n,q,a,d,e,?]?
+#   y → sim, adicionar este hunk ao staging
+#   n → não, pular este hunk
+#   s → dividir em hunks menores
+#   e → editar o hunk manualmente
+#   q → sair (o que foi staged permanece staged)
+#   ? → ajuda
+```
+
+**Por que isso importa em produção:** você pode ter 3 mudanças diferentes no mesmo arquivo (bugfix + refactor + doc) e criar 3 commits separados usando `git add -p`. Isso mantém o histórico semântico mesmo quando as mudanças estão fisicamente no mesmo arquivo.
+
+### git log — explorando o histórico
+
+```powershell
+# Formatos
+git log                           # completo (autor, data, mensagem)
+git log --oneline                 # hash curto + mensagem
+git log --oneline --graph         # com grafo de branches
+git log --oneline --graph --all   # inclui branches remotas
+
+# Filtros
+git log --author="Cézar"
+git log --since="2 weeks ago"
+git log --since="2026-01-01" --until="2026-06-01"
+git log --grep="feat(exercises)"       # busca no texto da mensagem
+git log -S "pl.col"                    # busca em conteúdo adicionado/removido (pickaxe)
+git log -- exercicios/ex3_pandas.ipynb # histórico de um arquivo específico
+
+# Formato personalizado
+git log --format="%h | %an | %ar | %s"
+#   %h  → hash curto
+#   %an → author name
+#   %ar → author date, relative (ex: "3 days ago")
+#   %s  → subject (primeira linha da mensagem)
+
+# Ver arquivos alterados em cada commit
+git log --stat
+git log --name-only
+git log --name-status     # M=modified, A=added, D=deleted, R=renamed
+```
+
+---
+
+## .gitignore e .gitattributes
+
+### .gitignore — o que não versionar
+
+```gitignore
+# ─── Python ───────────────────────────────────────────────
+__pycache__/
+*.py[cod]           # *.pyc, *.pyo, *.pyd
+*.egg-info/
+dist/
+build/
+
+# ─── Ambientes virtuais ───────────────────────────────────
+.venv/
+venv/
+env/
+
+# ─── Jupyter ──────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ─── Dados ────────────────────────────────────────────────
+# Regra geral: nunca versionar dados brutos (podem ser grandes e conter PII)
+*.csv
+*.parquet
+data/raw/
+data/bronze/
+!data/exemplo.csv   # exceção explícita para arquivo de amostra
+
+# ─── Credenciais ──────────────────────────────────────────
+.env
+.env.*
+*token*
+*secret*
+*credentials*
+secrets.yaml
+
+# ─── Sistema ──────────────────────────────────────────────
+.DS_Store           # macOS
+Thumbs.db           # Windows Explorer
+desktop.ini
+*.log
+```
+
+### Comandos de diagnóstico do .gitignore
+
+```powershell
+# Ver qual regra está ignorando um arquivo
+git check-ignore -v token-git.txt
+# .gitignore:37:*token*   token-git.txt
+
+# Ver TODOS os arquivos ignorados
+git status --ignored
+
+# Forçar adicionar um arquivo ignorado (use com cuidado)
+git add -f arquivo_ignorado.csv
+
+# Se adicionou um arquivo que deveria estar no .gitignore
+git rm --cached arquivo_sensivel.env    # remove do tracking sem apagar do disco
+git commit -m "chore: stop tracking .env file"
+```
+
+### .gitattributes — comportamento por tipo de arquivo
+
+```gitattributes
+# Normaliza line endings: Git armazena LF, converte ao fazer checkout conforme OS
+* text=auto
+
+# Força LF para arquivos de código (evita warnings no Windows)
+*.py     text eol=lf
+*.ipynb  text eol=lf
+*.sql    text eol=lf
+*.md     text eol=lf
+*.json   text eol=lf
+*.yaml   text eol=lf
+
+# Arquivos binários — não fazer diff nem conversão de line endings
+*.png    binary
+*.jpg    binary
+*.parquet binary
+*.pkl    binary
+```
+
+**Por que `.gitattributes` é superior a `core.autocrlf`:**
+```
+core.autocrlf  → configuração local de cada desenvolvedor (não versionada)
+.gitattributes → versionado no repo, aplica para todos automaticamente
+                 garante comportamento consistente em qualquer máquina
+```
+
+---
+
+## Conventional Commits
+
+Padrão da indústria que habilita automações: changelogs automáticos, bump de versão semântico, CI/CD condicional por tipo de commit.
+
+### Formato completo
+
+```
+<tipo>(<escopo>): <descrição> ← linha de assunto (max 72 chars)
+
+[corpo: contexto, motivação, o que mudou e por quê]
+
+[rodapé]
+Refs: #123
+BREAKING CHANGE: descrição da quebra de compatibilidade
+```
+
+### Tipos e quando usar
+
+| Tipo | Quando usar | Bump SemVer |
+|---|---|---|
+| `feat` | Nova funcionalidade para o usuário | MINOR |
+| `fix` | Correção de bug para o usuário | PATCH |
+| `docs` | Só documentação | - |
+| `refactor` | Mudança de código sem alterar comportamento externo | - |
+| `test` | Adicionando ou corrigindo testes | - |
+| `chore` | Manutenção: deps, config, build | - |
+| `style` | Formatação, linting (sem mudar lógica) | - |
+| `perf` | Melhoria de performance | PATCH |
+| `ci` | Arquivos de CI/CD | - |
+| `feat!` ou `BREAKING CHANGE:` | Quebra compatibilidade | MAJOR |
+
+### Corpo e rodapé — quando usar
+
+```bash
+# Commit simples — apenas assunto (suficiente para a maioria dos casos)
+git commit -m "feat(exercises): add polars window function examples"
+
+# Commit com corpo — quando a motivação não é óbvia
+git commit -m "refactor(etl): replace pandas apply with vectorized operation
+
+Using .apply() with a Python UDF bypasses pandas' internal optimizations.
+Replaced with numpy vectorized operation — 40x faster on 1M row dataset.
+
+Benchmarks:
+  Before: 12.3s for 1M rows
+  After:  0.3s for 1M rows"
+
+# Commit com breaking change
+git commit -m "feat(schema)!: rename column faturamento to revenue
+
+BREAKING CHANGE: all notebooks and queries referencing 'faturamento'
+must be updated to use 'revenue'. Run migration/rename_column.sql to
+update the PostgreSQL schema."
+```
+
+### Por que escopos são importantes
+
+Em projetos de dados, escopos ajudam a rastrear mudanças por área:
+```
+feat(ingestion):    novos conectores de fonte
+feat(transform):    lógica de transformação no pipeline
+feat(schema):       mudanças no schema de dados
+feat(exercises):    exercícios da trilha
+fix(pipeline):      bugs no ETL
+docs(reference):    documentação de referência
+chore(deps):        atualização de dependências
+ci(tests):          automações de CI
+```
+
+---
+
+## Branches: internamente e estratégias
+
+### O que é uma branch internamente
+
+```powershell
+# Uma branch é literalmente um arquivo de texto com 41 bytes
+Get-Content .git\refs\heads\main
+# 82663a4a65c9484204164c9aa0454d50fd97fdff
+
+# Criar uma branch = criar esse arquivo
+# Deletar uma branch = deletar esse arquivo
+# Não existe "conteúdo da branch" — apenas um ponteiro para um commit
+```
+
+### Comandos completos
+
+```powershell
+# Criar
+git switch -c feat/duckdb-ex5          # cria e entra (Git 2.23+)
+git switch -c feat/fix-x origin/main   # a partir de uma branch remota específica
+
+# Listar
+git branch                             # locais
+git branch -v                          # com último commit
+git branch -vv                         # com tracking de remote
+git branch -a                          # todas (locais + remotas)
+git branch --merged main               # branches já mergeadas na main
+git branch --no-merged main            # branches com commits que ainda não foram na main
+
+# Deletar
+git branch -d feat/concluida           # seguro: falha se não mergeada
+git branch -D feat/abandonada          # força
+
+# Renomear
+git branch -m nome-antigo nome-novo
+
+# Rastrear remote
+git branch --set-upstream-to=origin/main main
+git push -u origin feat/duckdb-ex5    # -u configura tracking automaticamente
+```
+
+### Estratégias de branching
+
+**Trunk-Based Development (recomendado para times ágeis/CI-CD):**
+```
+main ──●──────────────────●────────────────●──── (sempre deployável, proteção ativa)
+       └─ feat/x ─●─●─● ─┘
+                          ↑ branches curtas (< 2 dias)
+                          ↑ rebase + squash antes do merge
+                          ↑ CI passa antes de abrir PR
+```
+
+**Git Flow (projetos com releases cadenciadas):**
+```
+main      ────────────●────────────────────────●──── (produção — só recebe de release/hotfix)
+                      │                        │
+                    v1.0                      v1.1
+develop   ──●──●──●──────●──●──●──●──●──●──────────── (integração)
+             │            │    │       │
+feature/x ──●─●─●─────────┘    │       │
+feature/y ───────────────────●─●─●─────┘
+release/1.1                       └───────●────────── (estabilização antes de merge na main)
+hotfix/   ──────────────────────────────────────└──●  (branch da main, merge em main+develop)
+```
+
+**Feature Flags (alternativa moderna ao Git Flow):**
+```
+# Todos commitam na main — features desativadas por flag
+if feature_flags.is_enabled("novo_algoritmo", user):
+    return novo_algoritmo(data)
+return algoritmo_antigo(data)
+
+# Vantagem: elimina branches longas e conflitos massivos de merge
+# Usado por: Facebook, GitHub, Netflix
+```
+
+---
+
+## Merge deep dive
+
+### Fast-forward vs no-ff vs squash
+
+```
+Situação: main não avançou desde que feature foi criada
+
+main:    A ── B
+feature:      └── C ── D
+
+─────────────────────────────────────────────────────────────────────────────
+FAST-FORWARD (padrão quando possível):
+  main:    A ── B ── C ── D      (main simplesmente avança para onde feature está)
+  Sem commit de merge, sem evidência de que uma branch existiu
+  git merge feat/x               (ou git merge --ff feat/x)
+
+NO-FF (no-fast-forward):
+  main:    A ── B ──────────── M  (M = merge commit)
+  feature:      └── C ── D ──/
+  Preserva evidência da branch. M aponta para B e D como parents.
+  git merge --no-ff feat/x -m "feat: merge ..."
+
+SQUASH:
+  main:    A ── B ── S           (S = todos os commits de feature em 1 commit novo)
+  feature:      └── C ── D      (branch original não é tocada)
+  Histórico da main fica linear mas perde granularidade.
+  git merge --squash feat/x
+  git commit -m "feat: implementação completa da feature X"
+─────────────────────────────────────────────────────────────────────────────
+```
+
+### Como o Git resolve um merge — 3-way merge
+
+```
+Quando duas branches divergiram a partir de um ancestral comum (merge base):
+
+          Ancestral (base)
+          ┌──────────────┐
+          │ linha 1: AAA │
+          │ linha 2: BBB │
+          │ linha 3: CCC │
+          └──────────────┘
+               /        \
+  Branch HEAD (ours)    Branch MERGE_HEAD (theirs)
+  ┌──────────────┐      ┌──────────────┐
+  │ linha 1: AAA │      │ linha 1: AAA │
+  │ linha 2: XXX │      │ linha 2: BBB │  ← só "theirs" mudou
+  │ linha 3: CCC │      │ linha 3: YYY │  ← só "theirs" mudou
+  └──────────────┘      └──────────────┘
+
+Regra do 3-way merge:
+  - Se só um lado mudou → aceita a mudança automaticamente
+  - Se ambos mudaram a mesma linha → CONFLITO (exige resolução manual)
+  - Se ambos mudaram linhas diferentes → aceita ambos automaticamente
+```
+
+### Estratégias de merge
+
+```powershell
+# Estratégia padrão (Git 2.34+): ort — mais rápida e robusta
+git merge --strategy=ort feat/x
+
+# Estratégias por arquivo durante conflito
+git checkout --ours   arquivo.py    # aceita a versão da branch atual (HEAD)
+git checkout --theirs arquivo.py    # aceita a versão da branch entrante
+
+# Merge de múltiplas branches simultaneamente
+git merge feat/a feat/b feat/c      # estratégia 'octopus' (sem conflitos)
+```
+
+---
+
+## Rebase deep dive
+
+### O que o rebase faz internamente
+
+```
+Situação:
+  main:    A ── B ── C
+  feature: A ── B ── D ── E
+
+git rebase main (executado na branch feature):
+  1. Git encontra o merge base (B)
+  2. Salva os diffs de D e E temporariamente
+  3. Move o ponteiro de feature para C (ponta da main)
+  4. Re-aplica os diffs como novos commits D' e E'
+     (novos SHAs — D' ≠ D, mesmo conteúdo idêntico)
+
+  main:    A ── B ── C
+  feature:           └── D' ── E'
+```
+
+**Regra de ouro do rebase:**
+```
+⚠️ NUNCA rebase commits que já foram publicados (git push) em branch compartilhada.
+
+Por quê: rebase cria novos commits com SHAs diferentes.
+Se outra pessoa tem os commits originais e você sobrescreve com os rebased,
+o histórico dela fica incompatível — os "mesmos" commits existem com dois SHAs.
+
+✅ Rebase é seguro:
+  - Em branches locais antes do primeiro push
+  - Em feature branches que só você usa (com git push --force-with-lease)
+  - Em commits que ainda não saíram da sua máquina
+```
+
+### Rebase interativo — todos os comandos
+
+```powershell
+git rebase -i HEAD~5     # últimos 5 commits
+git rebase -i v0.1.0     # desde a tag v0.1.0
+git rebase -i <sha>      # desde o commit <sha> (não inclusivo)
+
+# O editor abre com a lista de commits (do mais antigo para o mais novo):
+# pick  abc1234  wip: first attempt
+# pick  def5678  wip: fix bug
+# pick  ghi9012  feat(exercises): complete solution
+# pick  jkl3456  docs: add comments
+
+# Ações disponíveis (substitua 'pick' por):
+# p, pick   → manter o commit como está
+# r, reword → manter mas editar a mensagem
+# e, edit   → pausar aqui para modificar o commit (pode fazer amend)
+# s, squash → combinar com o commit ANTERIOR, editor para nova mensagem
+# f, fixup  → combinar com o anterior, DESCARTAR mensagem deste
+# d, drop   → remover o commit completamente
+# x, exec   → executar um comando shell neste ponto do rebase
+# b, break  → pausar aqui (retomar com git rebase --continue)
+
+# Exemplo prático: squash todos os wip em um commit limpo
+# pick  abc1234  wip: first attempt      →  pick
+# pick  def5678  wip: fix bug            →  fixup  (descarta mensagem "wip: fix bug")
+# pick  ghi9012  feat(exercises): done   →  pick
+# pick  jkl3456  docs: add comments      →  fixup
+```
+
+### Rebase --onto — mover branch para novo ponto
+
+```powershell
+# Situação: feature/b foi criada a partir de feature/a por engano
+# Quero mover feature/b para que parta da main
+
+# main:      A ── B
+# feature/a: A ── B ── C ── D
+# feature/b: A ── B ── C ── D ── E ── F   (deveria partir de B)
+
+git rebase --onto main feature/a feature/b
+# Semântica: pegar commits de feature/b que NÃO estão em feature/a
+#            e reaplica-los sobre main
+
+# Resultado:
+# main:      A ── B ── E' ── F'   (feature/b agora parte de main)
+# feature/a: A ── B ── C ── D     (inalterada)
+```
+
+### Lidar com conflitos durante rebase
+
+```powershell
+# Quando um conflito ocorre, o rebase PAUSA
+# CONFLICT (content): Merge conflict in arquivo.py
+# Resolve the conflict and run "git rebase --continue"
+
+# 1. Edite os arquivos em conflito (remova marcações <<<, ===, >>>)
+# 2. Adicione ao staging
+git add arquivo.py
+
+# 3. Continuar para o próximo commit
+git rebase --continue
+
+# Outras opções quando em conflito durante rebase:
+git rebase --skip      # descarta o commit conflitante (cuidado!)
+git rebase --abort     # cancela tudo, volta ao estado antes do rebase
+```
+
+---
+
+## Resolvendo conflitos
+
+### Anatomia das marcações de conflito
+
+```
+<<<<<<< HEAD                          ← início do bloco "ours" (branch atual)
+# DuckDB — Introdução e Conceitos     ← conteúdo da branch atual (HEAD)
+=======                               ← separador
+# DuckDB — Visão Geral e Performance  ← conteúdo da branch entrante
+>>>>>>> feat/duckdb-overview          ← fim do bloco "theirs" (branch que está sendo merged)
+```
+
+O arquivo tem 3 versões disponíveis:
+- `HEAD` (ours) — o que estava na branch atual
+- `MERGE_HEAD` (theirs) — o que veio da branch sendo mergeada
+- `MERGE_BASE` — o ancestral comum (o que existia antes de ambas as branches divergirem)
+
+### Estratégias de resolução
+
+```powershell
+# Aceitar inteiramente "ours" (versão da branch atual)
+git checkout --ours   arquivo_conflitante.py
+git add               arquivo_conflitante.py
+
+# Aceitar inteiramente "theirs" (versão da branch entrante)
+git checkout --theirs arquivo_conflitante.py
+git add               arquivo_conflitante.py
+
+# Edição manual (o caso mais comum — combinar o melhor dos dois)
+# 1. Abrir o arquivo no editor
+# 2. Remover as marcações e deixar o conteúdo final desejado
+# 3. git add <arquivo>
+# 4. git commit (merge) ou git rebase --continue (rebase)
+```
+
+### rerere — Reuse Recorded Resolution
+
+```powershell
+# Ativa o rerere: Git memoriza como você resolveu cada conflito
+git config --global rerere.enabled true
+
+# A partir daí: quando um conflito idêntico aparecer novamente
+# (ex: durante rebase de uma branch longa), Git aplica automaticamente
+# a mesma resolução que você usou antes
+
+# Ver conflitos já resolvidos pelo rerere
+git rerere status
+git rerere diff     # ver o que seria aplicado automaticamente
+```
+
+### Abortando um merge em andamento
+
+```powershell
+# Se você iniciou um merge mas quer cancelar tudo
+git merge --abort       # volta ao estado antes do merge
+git rebase --abort      # volta ao estado antes do rebase
+git cherry-pick --abort # volta ao estado antes do cherry-pick
+```
+
+---
+
+## git reset, git revert e git restore — os três desfazeres
+
+Esta é a área que mais confunde. Três comandos, três propósitos distintos.
+
+```
+┌─────────────────┬─────────────────────────────────────────┬────────────────────────────┐
+│  Comando        │  O que faz                              │  Reescreve histórico?      │
+├─────────────────┼─────────────────────────────────────────┼────────────────────────────┤
+│  git reset      │  Move o ponteiro da branch para trás    │  ✅ SIM — perigoso em remoto│
+│  git revert     │  Cria novo commit que inverte as mudanças│  ❌ NÃO — seguro sempre    │
+│  git restore    │  Restaura arquivos (não mexe em commits) │  Não se aplica             │
+└─────────────────┴─────────────────────────────────────────┴────────────────────────────┘
+```
+
+### git reset — mover o ponteiro da branch
+
+```
+ANTES:  A ── B ── C ── D   (HEAD → D)
+        git reset HEAD~2   (volta 2 commits)
+DEPOIS: A ── B             (HEAD → B)
+        C e D ficam órfãos — serão coletados pelo GC após ~30 dias
+        (mas acessíveis pelo reflog enquanto estiverem lá)
+```
+
+**Três modos — o que acontece com as mudanças de C e D:**
+
+```powershell
+git reset --soft  HEAD~2   # Mudanças de C e D → ficam no STAGING (prontas para re-commitar)
+git reset --mixed HEAD~2   # Mudanças de C e D → ficam no WORKING DIR (não staged)  [padrão]
+git reset --hard  HEAD~2   # Mudanças de C e D → DESCARTADAS PERMANENTEMENTE ⚠️
+
+# Casos de uso:
+# --soft:  "quero reescrever a mensagem ou combinar com o próximo commit"
+# --mixed: "quero desfazer o commit mas manter as edições para revisar/reorganizar"
+# --hard:  "quero descartar tudo desta branch e voltar para um estado limpo"
+```
+
+### git revert — o desfazer seguro
+
+```powershell
+# Cria um novo commit que inverte exatamente o que um commit anterior fez
+git revert d25cb99         # inverte um commit específico
+git revert HEAD            # inverte o último commit
+git revert HEAD~3..HEAD    # inverte os últimos 3 commits (um commit de revert cada)
+git revert HEAD~3..HEAD --no-commit   # aplica os reverts mas não commita (agrupa em 1 commit)
+
+# Quando usar revert vs reset:
+# revert → sempre que o commit já foi publicado (git push)
+#          preserva o histórico, mostra transparência ("isso foi um erro, corrigi assim")
+# reset  → apenas em commits locais que ainda não foram publicados
+```
+
+### git restore — restaurar arquivos
+
+```powershell
+# Descartar edições no working directory (volta ao estado do último commit)
+git restore arquivo.py
+
+# Descartar edições de TODOS os arquivos
+git restore .
+
+# Remover do staging sem descartar edições (equivale a "unstage")
+git restore --staged arquivo.py
+
+# Restaurar para o conteúdo de um commit específico
+git restore --source=v0.1.0 arquivo.py
+git restore --source=HEAD~3 exercicios/ex3_pandas.ipynb
+```
+
+---
+
+## git stash
+
+Salva o estado atual do working directory e staging em uma pilha temporária.
+
+```powershell
+# Salvar (inclui arquivos tracked modificados e staged)
+git stash push -m "wip: refatorando pipeline de ingestão"
+
+# Salvar incluindo arquivos novos (untracked) — importante!
+git stash push -u -m "wip: novo arquivo de configuração"
+
+# Salvar apenas arquivos staged (--keep-index: mantém working dir)
+git stash push --keep-index -m "wip: só o staging"
+
+# Listar stashes (pilha LIFO — stash@{0} é o mais recente)
+git stash list
+# stash@{0}: On feat/pipeline: wip: refatorando pipeline de ingestão
+# stash@{1}: On main: wip: teste de configuração
+
+# Recuperar — pop (aplica e remove da pilha)
+git stash pop             # stash@{0}
+git stash pop stash@{2}   # específico
+
+# Recuperar — apply (aplica mas MANTÉM na pilha — útil para aplicar em outra branch)
+git stash apply stash@{0}
+
+# Inspecionar sem aplicar
+git stash show stash@{0}          # resumo dos arquivos
+git stash show -p stash@{0}       # diff completo
+
+# Criar branch a partir de um stash (o fluxo mais seguro)
+git stash branch feat/nova-branch stash@{0}
+# Cria a branch no commit onde o stash foi salvo e aplica o stash
+
+# Limpar
+git stash drop stash@{0}          # remove um stash específico
+git stash clear                   # remove todos ⚠️ irreversível
+```
+
+**Quando o stash pop gera conflito:**
+```powershell
+# O stash tenta aplicar sobre um working directory diferente do original
+# Resultado: CONFLICT — resolva como qualquer outro conflito de merge
+# Diferença: stash NÃO é removido automaticamente quando há conflito
+git stash drop stash@{0}   # remova manualmente após resolver
+```
+
+---
+
+## git cherry-pick
+
+Aplica o diff de um commit específico na branch atual — sem fazer merge completo.
+
+```
+main:    A ── B ── C ── D ── E
+feature:      └── F ── G ── H
+
+# Você quer apenas o commit G na main (sem H, sem F)
+git switch main
+git cherry-pick G
+
+main:    A ── B ── C ── D ── E ── G'
+# G' tem o mesmo diff de G mas novo SHA — pois o parent é diferente
+```
+
+```powershell
+# Aplicar um commit específico
+git cherry-pick abc1234
+
+# Aplicar range de commits (D até F, inclusive)
+git cherry-pick D^..F            # ^ = não inclusivo no início, então D^..F = D, E, F
+
+# Sem criar commit automaticamente (aplica as mudanças, fica no staging)
+git cherry-pick abc1234 --no-commit
+
+# Em caso de conflito
+# 1. Resolver manualmente
+# 2. git add <arquivo>
+# 3. git cherry-pick --continue
+#    ou git cherry-pick --abort
+```
+
+**Casos de uso em Data Engineering:**
+```
+1. Hotfix: você corrigiu um bug na develop e precisa levar para main sem o restante
+2. Backport: nova feature foi para main, precisa ir também para branch de release antiga
+3. Experimentos: você quer testar uma transformação específica de outra branch no seu pipeline
+```
+
+---
+
+## git bisect — encontrar o commit que introduziu um bug
+
+`bisect` usa busca binária no histórico para encontrar exatamente em qual commit um problema foi introduzido.
+
+```
+Histórico:  A ── B ── C ── D ── E ── F ── G ── H ── I ── J  (HEAD — tem bug)
+            ↑                                              ↑
+         funciona                                       tem bug
+         (good)                                         (bad)
+
+bisect divide ao meio e testa:  E (?)
+  E está ok → bug está em F..J → testa H (?)
+  H tem bug → bug está em F..H → testa G (?)
+  G tem bug → bug está em F..G → testa F (?)
+  F tem bug → F é o commit culpado!
+
+Total de testes: log₂(10) ≈ 4  (em vez de testar todos os 9 commits um a um)
+```
+
+```powershell
+# Iniciar bisect
+git bisect start
+
+# Marcar o commit atual (HEAD) como ruim
+git bisect bad
+
+# Marcar um commit antigo que funcionava como bom
+git bisect good v0.1.0    # pode ser tag, SHA, HEAD~20...
+
+# Git faz checkout do commit do meio — teste o bug, depois marque:
+git bisect good    # este commit não tem o bug
+git bisect bad     # este commit tem o bug
+
+# Repita até o Git identificar o commit culpado:
+# b4d5e6f is the first bad commit
+
+# Finalizar e voltar para HEAD
+git bisect reset
+```
+
+**Automatizar com script:**
+```powershell
+# Se você tem um script que retorna exit code 0 (ok) ou 1 (bug)
+git bisect start
+git bisect bad HEAD
+git bisect good v0.1.0
+git bisect run python tests/test_pipeline.py
+
+# Git executa o script em cada commit — você não precisa fazer nada manualmente
+```
+
+---
+
+## git reflog — a rede de segurança
+
+`reflog` registra **toda movimentação do HEAD** — mesmo coisas que parecem irreversíveis:
+
+```powershell
+git reflog
+# 82663a4 HEAD@{0}: merge feat/duckdb-overview: Merge made by the 'ort' strategy.
+# 181afc5 HEAD@{1}: merge feat/duckdb-intro: Merge made by the 'ort' strategy.
+# d25cb99 HEAD@{2}: checkout: moving from feat/duckdb-ex5 to main
+# e67a023 HEAD@{3}: rebase (finish): refs/heads/feat/duckdb-ex5
+# ...
+
+# Recuperar commit "perdido" após git reset --hard
+git reset --hard HEAD~5        # "perdi" 5 commits
+git reflog                     # encontre o SHA do commit antes do reset
+git reset --hard abc1234       # volta para ele
+# ou
+git switch -c branch-recuperada abc1234   # cria branch no commit recuperado
+```
+
+**O que o reflog rastreia:**
+```
+- Todos os commits (mesmo os "deletados" por reset/rebase)
+- Troca de branches (checkout/switch)
+- Merges e rebases
+- Stash pop/drop
+- Commits amend
+
+Duração: 90 dias por padrão (configurável com gc.reflogExpire)
+Escopo: apenas LOCAL — reflog não é enviado ao remote com git push
+```
+
+**Cenários de recuperação:**
+```powershell
+# Recuperar após git reset --hard acidental
+git reflog                              # encontre o SHA antes do reset
+git reset --hard <sha-antes-do-reset>
+
+# Recuperar branch deletada
+git branch -D feat/trabalho-importante  # ops, deletei sem querer
+git reflog | grep feat/trabalho         # encontre o último commit da branch
+git switch -c feat/trabalho-importante <sha>
+
+# Recuperar commit amend que sobrescreveu mensagem
+git reflog                              # o commit original ainda existe
+git switch -c recovery-branch ORIG_HEAD
+```
+
+---
+
+## Tags e Semantic Versioning
+
+### SemVer — MAJOR.MINOR.PATCH
+
+```
+v2.1.3
+│ │ └── PATCH: bugfix retrocompatível → v2.1.4
+│ └──── MINOR: nova funcionalidade retrocompatível → v2.2.0 (PATCH volta a 0)
+└────── MAJOR: quebra de compatibilidade → v3.0.0 (MINOR e PATCH voltam a 0)
+
+Regras especiais:
+  v0.x.x → desenvolvimento inicial, qualquer coisa pode mudar a qualquer momento
+  v1.0.0 → primeira versão pública estável
+  1.0.0-alpha.1 → pré-release (não estável)
+  1.0.0+20260508 → build metadata (ignorado para comparação de versões)
+```
+
+### Tag leve vs tag anotada
+
+```powershell
+# Tag LEVE — apenas um ponteiro (arquivo em .git/refs/tags/)
+git tag v0.1.0
+
+# Tag ANOTADA — objeto completo com metadados (recomendada para releases)
+git tag -a v0.1.0 -m "chore: first stable checkpoint - python, sql, pandas, polars, git"
+
+# Diferença: tag anotada tem: tagger, email, data, mensagem, verificação GPG opcional
+git show v0.1.0   # tag leve mostra só o commit; anotada mostra o objeto tag também
+
+# Operações
+git tag                      # listar todas
+git tag -l "v0.*"            # filtrar por padrão
+git tag -d v0.1.0            # deletar local
+git push origin v0.1.0       # publicar uma tag (tags NÃO sobem com git push padrão)
+git push origin --tags       # publicar todas as tags
+git push origin --delete v0.1.0   # deletar tag remota
+
+# Fazer checkout no estado de uma tag (detached HEAD)
+git checkout v0.1.0
+```
+
+### Versionamento deste projeto de estudos
+
+```
+v0.1.0 → Python + SQL + Pandas + Polars + Git (checkpoint 1)
+v0.2.0 → + Docker + DuckDB (checkpoint 2)
+v0.3.0 → + ETL Pipeline + Airflow (checkpoint 3)
+v0.4.0 → + dbt + Data Warehouse (checkpoint 4)
+v1.0.0 → projeto final completo, portfólio publicado
+```
+
+---
+
+## GitHub: remote, autenticação e PRs
+
+### Configurando remote
+
+```powershell
+# Adicionar remote
+git remote add origin https://github.com/dataengineercezar/trilha-data-engineer.git
+
+# Listar remotes
+git remote -v
+
+# Alterar URL (ex: migrar de HTTPS para SSH)
+git remote set-url origin git@github.com:dataengineercezar/trilha-data-engineer.git
+
+# Remover remote
+git remote remove origin
+
+# Adicionar segundo remote (ex: fork + upstream)
+git remote add upstream https://github.com/original/repo.git
+```
+
+### Autenticação
+
+**HTTPS com Personal Access Token (recomendado para Windows):**
+```
+1. GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)
+2. Generate new token → marcar escopo: repo
+3. Token aparece UMA VEZ — salve em gerenciador de senhas
+4. No primeiro git push: username = seu_usuario, password = o token
+5. Windows Credential Manager salva automaticamente após o primeiro uso
+```
+
+**SSH (alternativa — sem precisar de token):**
+```powershell
+# Gerar chave SSH
+ssh-keygen -t ed25519 -C "dataengineercezar@gmail.com"
+
+# Adicionar ao SSH agent
+ssh-add ~/.ssh/id_ed25519
+
+# Copiar chave pública
+Get-Content ~/.ssh/id_ed25519.pub | clip
+
+# Colar em: GitHub → Settings → SSH and GPG keys → New SSH key
+# Testar
+ssh -T git@github.com
+# Hi dataengineercezar! You've successfully authenticated...
+```
+
+### Fluxo diário com remote
+
+```powershell
+# Sincronizar com o remote antes de começar a trabalhar
+git fetch origin                        # baixa objetos, não aplica
+git status                              # mostra se está atrás/na frente do remote
+git pull                                # fetch + rebase (com pull.rebase=true)
+git pull --ff-only                      # falha se houver divergência (mais seguro)
+
+# Trabalhar...
+git switch -c feat/nova-feature
+# ... commits ...
+
+# Publicar branch e abrir PR
+git push -u origin feat/nova-feature    # -u configura tracking
+
+# Sincronizar main após PR mergeado
+git switch main
+git pull
+git branch -d feat/nova-feature         # limpar branch local
+```
+
+### Pull Requests — fluxo profissional
+
+**O que um bom PR contém:**
+```markdown
+## O que foi feito
+Implementa a transformação de normalização de CEP no pipeline de clientes.
+
+## Motivação
+CEPs chegam em formatos inconsistentes (com e sem hífen). A normalização
+garante que joins com tabela de endereços funcionem corretamente.
+
+## Como testar
+1. `pytest tests/test_cep_normalizer.py`
+2. Rodar o notebook `exercicios/ex5_duckdb.ipynb` — célula 4 deve mostrar 100% de match
+
+## Breaking Changes
+Nenhum — a coluna `cep` continua existindo, apenas normalizada.
+
+## Checklist
+- [x] Testes passando
+- [x] Documentação atualizada
+- [x] Sem dados sensíveis commitados
+```
+
+### Proteção da branch main
+
+```
+GitHub → repositório → Settings → Branches → Add branch protection rule:
+  Branch name pattern: main
+  ✅ Require a pull request before merging
+  ✅ Require approvals: 1
+  ✅ Dismiss stale pull request approvals when new commits are pushed
+  ✅ Require status checks to pass (ex: CI tests)
+  ✅ Require branches to be up to date before merging
+  ✅ Do not allow bypassing the above settings
+```
+
+---
+
+## GitHub Actions — CI básico
+
+GitHub Actions automatiza workflows disparados por eventos no repositório (push, PR, schedule).
+
+### Estrutura de um workflow
+
+```
+.github/
+└── workflows/
+    └── ci.yml          ← arquivo de workflow (YAML)
+```
+
+### Workflow básico — rodar testes Python em cada push
+
+```yaml
+# .github/workflows/ci.yml
+name: CI
+
+on:                         # eventos que disparam o workflow
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest  # runner: ubuntu, windows-latest, macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
+
+      - name: Check code formatting
+        run: |
+          pip install black
+          black --check exercicios/ src/
+```
+
+### Workflow para Data Engineering — validar dados e schema
+
+```yaml
+name: Data Validation
+
+on:
+  push:
+    paths:
+      - "exercicios/**"
+      - "src/**"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install polars pandas duckdb great-expectations
+
+      - name: Run data quality checks
+        run: python scripts/validate_schemas.py
+
+      - name: Run notebook smoke test
+        run: |
+          pip install jupyter nbconvert
+          jupyter nbconvert --to notebook --execute exercicios/ex4_polars.ipynb
+```
+
+### Conceitos de Actions
+
+```
+Workflow  → arquivo .yml em .github/workflows/
+Job       → unidade de execução em um runner (pode ter vários jobs em paralelo)
+Step      → comando ou action dentro de um job (executados em sequência)
+Action    → bloco reutilizável (uses: actions/checkout@v4)
+Runner    → máquina virtual onde o job roda (GitHub-hosted ou self-hosted)
+Secrets   → variáveis sensíveis configuradas em Settings → Secrets (ex: tokens, senhas)
+           Acessadas como: ${{ secrets.DB_PASSWORD }}
+```
+
+---
+
+## Fluxo profissional completo
+
+Este é o fluxo diário de um engenheiro de dados em um time usando Git/GitHub:
+
+```
+1. INÍCIO DO DIA
+   git fetch origin          # sincronizar com remote
+   git pull                  # aplicar mudanças da main
+
+2. NOVA TAREFA
+   git switch -c feat/JIRA-123-normalizar-cep
+   # convenção: tipo/ticket-descricao-breve
+
+3. DESENVOLVIMENTO (ciclo repetido)
+   # ... editar código/notebooks ...
+   git add -p                # staging interativo — commits atômicos
+   git commit -m "feat(transform): add CEP normalization function"
+   # repita
+
+4. ANTES DE ABRIR PR — limpar histórico
+   git fetch origin
+   git rebase origin/main    # rebase na main mais recente
+   git rebase -i HEAD~N      # squash de commits wip (opcional)
+   git push -u origin feat/JIRA-123-normalizar-cep
+
+5. PULL REQUEST
+   # GitHub → criar PR → preencher template
+   # Aguardar CI passar (Actions)
+   # Code review → resolver comentários com novos commits
+   # Aprovação → Squash and Merge (ou Rebase and Merge)
+
+6. PÓS MERGE
+   git switch main
+   git pull
+   git branch -d feat/JIRA-123-normalizar-cep
+
+7. RELEASE (quando aplicável)
+   git tag -a v0.2.0 -m "chore: add duckdb and docker exercises"
+   git push origin v0.2.0
+```
+
+### Comandos de inspeção mais úteis no dia a dia
+
+```powershell
+git log --oneline --graph --all           # visão geral do estado do repositório
+git diff HEAD                             # tudo pendente de commitar
+git diff origin/main..HEAD --name-only    # arquivos que vão no PR
+git log origin/main..HEAD --oneline       # commits que vão no PR
+git shortlog -sn                          # estatísticas de commits por autor
+git log --stat --since="1 week ago"       # o que mudou na última semana
+```
+
+---
 
 ```powershell
 # 1. Entrar na pasta do projeto
@@ -2526,359 +3815,6 @@ data/raw/
 git status --ignored
 git check-ignore -v <arquivo>    # diz qual regra está ignorando o arquivo
 ```
-
----
-
-## .gitattributes — padronizar line endings
-
-O arquivo `.gitattributes` na raiz do repositório define como o Git trata arquivos independentemente da configuração local de cada desenvolvedor.
-
-**Problema:** no Windows, `core.autocrlf = true` faz o Git converter LF → CRLF ao fazer checkout, gerando warnings e diffs espúrios em arquivos `.ipynb`, `.py`, etc.:
-```
-warning: in the working copy of 'exercicios/ex3_pandas.ipynb', LF will be replaced by CRLF
-```
-
-**Solução — criar `.gitattributes` na raiz do projeto:**
-```gitattributes
-# Normaliza line endings para LF no repositório
-* text=auto
-
-# Força LF para arquivos de código/notebooks
-*.py text eol=lf
-*.ipynb text eol=lf
-*.sql text eol=lf
-*.md text eol=lf
-*.json text eol=lf
-```
-
-### Por que preferir .gitattributes a core.autocrlf
-
-| | `core.autocrlf` | `.gitattributes` |
-|---|---|---|
-| Escopo | Configuração local do desenvolvedor | Versionado junto ao repo |
-| Portabilidade | Cada pessoa precisa configurar | Aplica para todos automaticamente |
-| Granularidade | Global (todos os arquivos) | Por extensão ou caminho |
-
-### Aplicar após criar o arquivo
-```powershell
-git add .gitattributes
-git commit -m "chore: add .gitattributes to normalize line endings"
-```
-
----
-
-## Conventional Commits
-
-Padrão amplamente adotado na indústria. Permite gerar changelogs automáticos e deixa o histórico legível.
-
-```
-<tipo>(<escopo>): <descrição imperativa>
-
-[corpo opcional]
-
-[rodapé opcional — breaking changes, issue refs]
-```
-
-### Tipos e quando usar
-
-| Tipo | Quando usar | Exemplo |
-|------|-------------|---------|
-| `feat` | Nova funcionalidade | `feat(api): add endpoint /users` |
-| `fix` | Correção de bug | `fix(parser): handle null values in CSV` |
-| `docs` | Só documentação | `docs: update README with setup steps` |
-| `refactor` | Sem mudar comportamento | `refactor(etl): extract transform step to function` |
-| `test` | Adicionar/corrigir testes | `test(pipeline): add unit tests for transformer` |
-| `chore` | Manutenção (deps, config) | `chore: upgrade polars to 1.40` |
-| `style` | Formatação, linting | `style: apply black formatter` |
-| `perf` | Melhoria de performance | `perf(query): replace loop with vectorized operation` |
-| `ci` | CI/CD | `ci: add github actions workflow` |
-
-### Exemplos reais para este projeto
-```bash
-feat: initialize trilha-data-engineer repository
-docs: add personalized 48-week study plan
-feat(exercises): add python comprehensions and generators exercises
-feat(exercises): add sql joins and window functions exercises
-feat(exercises): add pandas ex3 notebook with assign and groupby
-feat(exercises): add polars ex4 notebook
-docs(reference): add pandas section to exercicios_resolvidos
-docs(reference): add polars section to exercicios_resolvidos
-chore: add .gitignore for python and data engineering
-```
-
-### Breaking changes
-```bash
-# Mudança incompatível com versão anterior — adicionar ! e BREAKING CHANGE no rodapé
-feat(schema)!: rename column faturamento to revenue
-
-BREAKING CHANGE: renomeação afeta todos os notebooks que referenciam a coluna
-```
-
----
-
-## Branches: estratégias e comandos
-
-### Comandos essenciais
-
-```powershell
-# Criar e entrar na branch
-git switch -c feat/duckdb-ex5        # moderno (Git 2.23+)
-git checkout -b feat/duckdb-ex5      # legado — ainda funciona
-
-# Listar branches
-git branch                           # locais
-git branch -a                        # locais + remotas
-
-# Trocar de branch
-git switch main
-git checkout main                    # legado
-
-# Deletar branch (após merge)
-git branch -d feat/duckdb-ex5        # seguro — falha se não mergeada
-git branch -D feat/duckdb-ex5        # força
-
-# Ver qual branch você está
-git branch --show-current
-```
-
-### Estratégias de branching
-
-**Trunk-Based Development (recomendado para times ágeis):**
-```
-main ──●──────────────────●──────── (sempre deployável)
-       └─ feat/x ─●─●─● ─┘
-                             ↑ branches curtas (< 2 dias), rebase antes de merge
-```
-
-**Git Flow (projetos com releases definidas):**
-```
-main      ──────●─────────────────────●──── (produção, só tags)
-develop   ──●───●───●───●───●───●──── (integração contínua)
-feature/  ──────────┘   └───┘
-release/                    └─────●──
-hotfix/   ──────────────────────────└─●
-```
-
-**Para projetos de estudo (esta trilha):**
-```
-main          ─── sempre com exercícios completos e revisados
-feat/ex5-*    ─── desenvolvimento de cada exercício
-docs/*        ─── atualizações de documentação
-```
-
----
-
-## Rebase vs Merge
-
-```
-Situação inicial:
-  main:     A ── B ── C
-  feature:  A ── B ── D ── E
-
-─────────────────────────────────────────────────────────────────
-MERGE (--no-ff):                    REBASE:
-  main:     A─B─C──────M           main: A─B─C─D'─E'
-  feature:       D─E──/            (D e E são reescritos com base em C)
-  Preserva histórico real           Histórico linear, mais legível
-  Cria commit de merge              Sem commit de merge
-  Seguro em branches remotas        ⚠️ Nunca rebase branches compartilhadas
-─────────────────────────────────────────────────────────────────
-```
-
-### Quando usar cada um
-```
-merge --no-ff  → integrar feature branch na main (preserva rastreabilidade)
-merge --ff     → branches locais pequenas sem relevância histórica
-rebase         → limpar commits de uma branch ANTES de abrir PR
-                 ("squash" de commits wip antes do review)
-rebase -i      → rebase interativo: squash, reword, reorder, drop commits
-```
-
-### Rebase interativo — fluxo completo
-```powershell
-# Você tem 3 commits wip na branch
-git log --oneline
-# abc1234 wip: fix typo
-# def5678 wip: add content
-# ghi9012 feat(exercises): scaffold notebook   ← manter este
-
-# Reescrever os últimos 3 commits
-git rebase -i HEAD~3
-
-# Editor abre com:
-# pick ghi9012 feat(exercises): scaffold notebook
-# pick def5678 wip: add content
-# pick abc1234 wip: fix typo
-
-# Alterar para squash (s) nos que quer combinar:
-# pick ghi9012 feat(exercises): scaffold notebook
-# squash def5678 wip: add content
-# squash abc1234 wip: fix typo
-
-# Salvar → editor abre para editar a mensagem final do commit combinado
-# Resultado: 1 commit limpo com a mensagem que você escolheu
-```
-
----
-
-## git stash
-
-Salva trabalho em progresso sem commitar — útil quando precisa trocar de branch urgentemente.
-
-```powershell
-# Salvar modificações (tracked + staged)
-git stash push -m "wip: descricao do que estava fazendo"
-
-# Salvar incluindo arquivos novos (untracked)
-git stash push -u -m "wip: incluindo novos arquivos"
-
-# Listar stashes
-git stash list
-# stash@{0}: On feat/duckdb: wip: descricao
-# stash@{1}: On main: wip: outra coisa
-
-# Recuperar o stash mais recente (e remover da pilha)
-git stash pop
-
-# Recuperar sem remover (para aplicar em outra branch)
-git stash apply stash@{1}
-
-# Ver o que tem no stash sem aplicar
-git stash show -p stash@{0}
-
-# Descartar
-git stash drop stash@{0}
-git stash clear              # limpar todos
-```
-
----
-
-## Tags e Semantic Versioning
-
-### SemVer — MAJOR.MINOR.PATCH
-
-```
-v1.4.2
-│ │ └─ PATCH: bugfix compatível com versão anterior
-│ └─── MINOR: nova funcionalidade compatível (incrementa, PATCH vai a 0)
-└───── MAJOR: mudança incompatível com versão anterior (incrementa, demais vão a 0)
-
-v0.x.x → projeto em desenvolvimento, API pode mudar a qualquer momento
-v1.0.0 → primeira versão estável/produção
-```
-
-### Para este projeto de estudos
-```
-v0.1.0 → checkpoint Python + SQL + Pandas + Polars
-v0.2.0 → + DuckDB + Git
-v0.3.0 → + Docker + primeiro pipeline ETL
-v1.0.0 → projeto final completo, pronto para portfólio
-```
-
-### Comandos de tag
-
-```powershell
-# Criar tag anotada (recomendado — inclui autor, data, mensagem)
-git tag -a v0.1.0 -m "chore: checkpoint python, sql, pandas, polars exercises"
-
-# Criar tag leve (só um ponteiro, sem metadados)
-git tag v0.1.0
-
-# Listar tags
-git tag
-git tag -l "v0.*"             # filtrar por padrão
-
-# Ver detalhes da tag
-git show v0.1.0
-
-# Publicar tag no remoto (tags não são enviadas automaticamente com git push)
-git push origin v0.1.0        # uma tag específica
-git push origin --tags         # todas as tags
-
-# Deletar tag local
-git tag -d v0.1.0
-
-# Deletar tag remota
-git push origin --delete v0.1.0
-```
-
----
-
-## Criando repositório remoto no GitHub
-
-### Passo a passo completo
-
-**1. Criar o repositório no GitHub (via interface web)**
-1. Acesse [github.com](https://github.com) → botão **"New"** (canto superior esquerdo)
-2. Preencha:
-   - **Repository name:** `trilha-data-engineer`
-   - **Description:** "Exercícios e documentação da trilha Data Engineer → Senior/ML"
-   - **Visibility:** Public (para portfólio) ou Private
-   - ⚠️ **NÃO marque** "Add a README file" nem "Add .gitignore" — o repositório deve estar vazio para conectar ao local
-3. Clique em **"Create repository"**
-
-**2. Conectar repositório local ao remoto**
-```powershell
-# Adicionar o remote (substitua SEU_USUARIO pelo seu username do GitHub)
-git remote add origin https://github.com/SEU_USUARIO/trilha-data-engineer.git
-
-# Verificar que foi adicionado
-git remote -v
-# origin  https://github.com/SEU_USUARIO/trilha-data-engineer.git (fetch)
-# origin  https://github.com/SEU_USUARIO/trilha-data-engineer.git (push)
-```
-
-**3. Enviar o repositório local para o GitHub**
-```powershell
-# Primeiro push — define a branch upstream
-git push -u origin main
-
-# Após o primeiro push, simplesmente:
-git push
-```
-
-### Autenticação — Personal Access Token (PAT)
-
-GitHub removeu autenticação por senha em 2021. Use **Personal Access Token**:
-
-1. GitHub → **Settings** → **Developer settings** → **Personal access tokens** → **Tokens (classic)**
-2. **Generate new token (classic)**
-3. Marcar escopos: `repo` (acesso total a repositórios privados/públicos)
-4. Copie o token — ele só aparece uma vez
-5. No `git push`, quando pedir senha, cole o token (não a senha da conta)
-
-**Salvar credenciais para não digitar toda vez:**
-```powershell
-git config --global credential.helper manager
-# Windows Credential Manager salva automaticamente após o primeiro login
-```
-
-### Fluxo diário com remote
-
-```powershell
-# Baixar mudanças do remoto sem aplicar
-git fetch origin
-
-# Baixar e aplicar (pull = fetch + merge/rebase)
-git pull
-
-# Enviar commits locais
-git push
-
-# Ver diferença entre local e remoto
-git log origin/main..main --oneline    # commits que ainda não foram para o remoto
-git log main..origin/main --oneline    # commits do remoto que ainda não vieram
-```
-
-### Proteção da branch main (GitHub)
-
-No repositório remoto → **Settings** → **Branches** → **Add branch protection rule**:
-- Branch name pattern: `main`
-- ✅ Require a pull request before merging
-- ✅ Require approvals (em times)
-- ✅ Require status checks to pass (CI/CD)
-
-Isso garante que ninguém (nem você) possa fazer `git push` direto na `main` — obriga a usar PRs.
 
 ---
 
