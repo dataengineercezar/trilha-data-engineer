@@ -4741,6 +4741,433 @@ services:
 
 ## Exercícios Resolvidos — Docker
 
-*(Será preenchido durante os exercícios da Semana 8)*
+### Q1 — Primeiro container Python
+
+**Objetivo:** construir e rodar uma imagem Docker com Python + Polars.
+
+**`hello_pipeline.py`:**
+```python
+import polars as pl
+import os
+
+vendas = pl.DataFrame({
+    "produto":    ["Notebook", "Mouse", "Teclado", "Monitor", "Headset"],
+    "categoria":  ["Eletrônicos", "Periféricos", "Periféricos", "Eletrônicos", "Periféricos"],
+    "valor":      [3500.00, 120.00, 280.00, 1800.00, 350.00],
+    "quantidade": [2, 10, 5, 3, 7],
+})
+
+resultado = (
+    vendas
+    .with_columns((pl.col("valor") * pl.col("quantidade")).alias("total"))
+    .group_by("categoria")
+    .agg(pl.col("total").sum().alias("faturamento_total"))
+    .sort("faturamento_total", descending=True)
+)
+
+print("=" * 45)
+print("  Faturamento por categoria")
+print("=" * 45)
+print(resultado)
+print()
+print("✅ Pipeline executado dentro do container Docker!")
+print(f"   Python rodando em: {os.uname().sysname if hasattr(os, 'uname') else 'Windows container'}")
+```
+
+**`Dockerfile` (v1 — baseline):**
+```dockerfile
+FROM python:3.14-slim
+
+RUN pip install --no-cache-dir polars pyarrow
+
+COPY hello_pipeline.py /app/hello_pipeline.py
+
+WORKDIR /app
+
+CMD ["python", "hello_pipeline.py"]
+```
+
+**Comandos:**
+```powershell
+docker build -t trilha-hello:1.0 .
+docker run --rm trilha-hello:1.0
+```
+
+**Output:**
+```
+=============================================
+  Faturamento por categoria
+=============================================
+shape: (2, 2)
+┌─────────────┬───────────────────┐
+│ categoria   ┆ faturamento_total │
+╞═════════════╪═══════════════════╡
+│ Eletrônicos ┆ 12400.0           │
+│ Periféricos ┆ 5050.0            │
+└─────────────┴───────────────────┘
+
+✅ Pipeline executado dentro do container Docker!
+   Python rodando em: Linux
+```
+
+**Aprendizado-chave:** mesmo no Windows, containers rodam sobre kernel Linux via Docker Desktop. A flag `--rm` remove o container automaticamente após a execução — o container é efêmero.
+
+---
+
+### Q2 — Otimizando com cache, .dockerignore e usuário não-root
+
+**Problema identificado:** na versão Q1, o `pip install` estava antes do `COPY` do código, mas qualquer mudança no código reinvalidava o cache de forma desnecessária. Além disso, o container rodava como `root`.
+
+**`Dockerfile` (v2 — otimizado):**
+```dockerfile
+FROM python:3.14-slim
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /app
+
+RUN useradd --no-create-home appuser && chown appuser:appuser /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY --chown=appuser:appuser . .
+
+USER appuser
+
+CMD ["python", "hello_pipeline.py"]
+```
+
+**Ordem das camadas — por que importa:**
+```
+COPY requirements.txt .          ← muda raramente → cache reutilizado
+RUN pip install ...               ← ~30s de instalação → CACHED na maioria dos rebuilds
+COPY --chown=appuser:appuser . .  ← muda sempre → sem cache, mas só copia arquivos (rápido)
+```
+Se o `COPY . .` viesse antes do `pip install`, qualquer edição no código Python forçaria reinstalar todas as dependências.
+
+**`.dockerignore`:**
+```dockerignore
+.git/
+.gitignore
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.md
+.env
+.env.*
+*.log
+.DS_Store
+Thumbs.db
+```
+
+**`requirements.txt`:**
+```
+polars
+pyarrow
+```
+
+**Validação:**
+```powershell
+docker build -t trilha-hello:2.0 .
+docker run --rm trilha-hello:2.0 whoami
+# appuser  ← não root
+
+docker run --rm trilha-hello:2.0 touch /app/teste.txt
+# Permission denied ← arquivos pertenciam ao root (bug encontrado)
+```
+
+**Bug encontrado e corrigido:** `useradd` e `COPY . .` estavam na ordem errada — os arquivos eram copiados com dono `root` e o `appuser` não conseguia escrever em `/app`. Solução: criar o usuário **antes** do `COPY`, usar `--chown` e garantir que o próprio diretório `/app` pertença ao `appuser` com `chown appuser:appuser /app`.
+
+```powershell
+# Após a correção:
+docker build -t trilha-hello:3.0 .
+docker run --rm trilha-hello:3.0 touch /app/teste.txt   # sem erro
+docker run --rm trilha-hello:3.0 ls -la /app
+# drwxr-xr-x 1 appuser appuser ... .
+# -rwxr-xr-x 1 appuser appuser ... hello_pipeline.py
+```
+
+---
+
+### Q3 — Multi-stage build
+
+**Objetivo:** separar a fase de instalação de dependências (builder) da imagem final (runtime), reduzindo o que vai para produção.
+
+**Por que usar virtualenv no builder (e não pip install global):**
+Quando o pip instala globalmente, os pacotes se espalham por `/usr/local/lib/python3.x/site-packages/`, `/usr/local/bin/` etc. — misturados com a stdlib e arquivos do SO. Com `python -m venv /opt/venv`, tudo fica em um diretório autocontido. O `COPY --from=builder /opt/venv /opt/venv` leva exatamente e somente as dependências instaladas, sem arrastar o compilador, headers ou qualquer outra coisa do estágio de build.
+
+**`Dockerfile.multistage`:**
+```dockerfile
+# ── Estágio 1: builder ────────────────────────────────────────────────────────
+FROM python:3.14-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# ── Estágio 2: runtime ────────────────────────────────────────────────────────
+FROM python:3.14-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+RUN useradd --no-create-home appuser && chown appuser:appuser /app
+
+COPY --chown=appuser:appuser . .
+
+USER appuser
+
+CMD ["python", "hello_pipeline.py"]
+```
+
+**Comparação de tamanhos (CONTENT SIZE):**
+```
+REPOSITORY       TAG          CONTENT SIZE
+trilha-hello     1.0          158MB
+trilha-hello     2.0          154MB
+trilha-hello     3.0          154MB
+trilha-hello     multistage   158MB   ← ligeiramente maior!
+```
+
+**Por que o multistage ficou maior neste caso:**
+O virtualenv carrega overhead que o pip install global não tem. O `python -m venv` instala automaticamente `pip` e `setuptools` dentro do próprio venv — mesmo que a imagem base já os tenha. O delta de ~4MB é exatamente esses pacotes duplicados.
+
+**Quando multi-stage realmente compensa:**
+
+| Cenário | Builder | Runtime | Economia típica |
+|---|---|---|---|
+| Deps puras Python (este exercício) | slim + venv | slim + venv | 0 (até negativo) |
+| Lib com C extension (numpy, grpcio) | slim + gcc + build-essential | slim + venv | ~300–500MB |
+| App Go/Rust | OS + compilador | scratch ou distroless | ~800MB+ |
+
+**Lição:** multi-stage não é sempre melhor. Para dependências puras Python instaladas via wheels pré-compilados, o pip install direto é mais eficiente. O ganho real aparece quando o builder precisa de ferramentas pesadas (gcc, CMake, Rust) que não têm lugar no runtime.
+
+---
+
+### Q4 — Pipeline ETL conectando ao PostgreSQL
+
+**Objetivo:** container Python que extrai dados do PostgreSQL, transforma com Polars e salva resultado de volta no banco.
+
+**Decisões de design:**
+
+1. **Variáveis de ambiente, não hardcode:** `localhost:5432` dentro de um container aponta para o próprio container, não para o host nem para outro container. A mesma imagem precisa funcionar em dev, staging e produção — quem sabe o endereço é quem sobe o container.
+
+2. **Network user-defined:** na rede bridge padrão, containers não resolvem nomes entre si. Em uma rede user-defined, o Docker fornece DNS automático — o container Python usa o nome do container Postgres como hostname.
+
+3. **`psycopg2-binary` não `psycopg2`:** em imagens `slim` sem `gcc` e `build-essential`, o `psycopg2` puro falha na instalação (precisa ser compilado). A variante `-binary` vem pré-compilada.
+
+**`Dockerfile.etl`:**
+```dockerfile
+FROM python:3.14-slim
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONIOENCODING=utf-8
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+
+WORKDIR /app
+
+RUN useradd --no-create-home appuser && chown appuser:appuser /app
+
+COPY requirements-etl.txt .
+RUN pip install --no-cache-dir -r requirements-etl.txt
+
+COPY --chown=appuser:appuser etl_pipeline.py .
+
+USER appuser
+
+CMD ["python", "etl_pipeline.py"]
+```
+
+**`requirements-etl.txt`:**
+```
+polars
+psycopg2-binary
+```
+
+**`etl_pipeline.py`:**
+```python
+import os
+import polars as pl
+import psycopg2
+
+DB_HOST = os.environ.get("DB_HOST", "localhost")
+DB_PORT = os.environ.get("DB_PORT", "5432")
+DB_NAME = os.environ.get("DB_NAME", "postgres")
+DB_USER = os.environ.get("DB_USER", "postgres")
+DB_PASS = os.environ.get("DB_PASS", "")
+
+def extract(conn) -> pl.DataFrame:
+    query = """
+        SELECT p.categoria,
+               SUM(ip.quantidade * ip.preco_unit) AS faturamento_total
+        FROM itens_pedido ip
+        JOIN produtos p ON ip.id_produto = p.id_produto
+        GROUP BY p.categoria
+        ORDER BY faturamento_total DESC
+    """
+    with conn.cursor() as cur:
+        cur.execute(query)
+        rows = cur.fetchall()
+        cols = [desc[0] for desc in cur.description]
+    return pl.DataFrame(rows, schema=cols, orient="row")
+
+def transform(df: pl.DataFrame) -> pl.DataFrame:
+    total = df["faturamento_total"].sum()
+    return df.with_columns(
+        (pl.col("faturamento_total") / total * 100).round(2).alias("percentual")
+    )
+
+def load(df: pl.DataFrame, conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute("""
+            DROP TABLE IF EXISTS resumo_faturamento_categoria;
+            CREATE TABLE resumo_faturamento_categoria (
+                categoria         VARCHAR(100),
+                faturamento_total NUMERIC(12,2),
+                percentual        NUMERIC(5,2)
+            )
+        """)
+        for row in df.iter_rows(named=True):
+            cur.execute(
+                "INSERT INTO resumo_faturamento_categoria VALUES (%s, %s, %s)",
+                (row["categoria"], row["faturamento_total"], row["percentual"])
+            )
+    conn.commit()
+
+def main():
+    conn = psycopg2.connect(
+        host=DB_HOST, port=DB_PORT, dbname=DB_NAME, user=DB_USER, password=DB_PASS
+    )
+    try:
+        df_raw   = extract(conn)
+        df_final = transform(df_raw)
+        load(df_final, conn)
+    finally:
+        conn.close()
+
+if __name__ == "__main__":
+    main()
+```
+
+**Bug de encoding encontrado e corrigido:**
+Output original mostrava `Eletr??nicos`, `Perif??ricos` — cada `??` representava um byte UTF-8 multibyte tratado individualmente como ASCII desconhecido. A imagem `python:slim` não instala locales; o padrão é POSIX (ASCII). Solução: adicionar `PYTHONIOENCODING=utf-8`, `LANG=C.UTF-8` e `LC_ALL=C.UTF-8` no Dockerfile. Havia também um bug paralelo de encoding no pipe do PowerShell ao inserir o SQL — resolvido usando `docker cp` + `psql -f` diretamente.
+
+**Comandos para rodar manualmente:**
+```powershell
+docker start postgres-estudo
+docker network create trilha-network
+docker network connect trilha-network postgres-estudo
+docker build -f Dockerfile.etl -t trilha-etl:1.0 .
+docker run --rm `
+    --network trilha-network `
+    -e DB_HOST=postgres-estudo `
+    -e DB_NAME=postgres `
+    -e DB_USER=postgres `
+    -e DB_PASS=estudo123 `
+    trilha-etl:1.0
+```
+
+---
+
+### Q5 — docker-compose: orquestração completa
+
+**Objetivo:** `docker compose up --build` sobe Postgres + ETL pipeline, com dataset carregado automaticamente e healthcheck garantindo a ordem correta de inicialização.
+
+**`docker-compose.yml`:**
+```yaml
+services:
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: estudo123
+      POSTGRES_DB: postgres
+    volumes:
+      - ../../sql/setup_dataset.sql:/docker-entrypoint-initdb.d/setup_dataset.sql:ro
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  etl:
+    build:
+      context: .
+      dockerfile: Dockerfile.etl
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: postgres
+      DB_USER: postgres
+      DB_PASS: estudo123
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  pg_data:
+```
+
+**Decisões técnicas:**
+
+| Decisão | Motivo |
+|---|---|
+| `postgres:16-alpine` | Menor que `postgres:16` (~85MB vs ~400MB), sem sacrificar funcionalidade |
+| `setup_dataset.sql` montado em `initdb.d/` | Postgres executa todos os `.sql` neste diretório na primeira inicialização — sem `docker cp` manual |
+| `pg_data` volume nomeado | Dados persistem entre `docker compose up/down`; só `down -v` apaga |
+| `DB_HOST: db` | Nome do serviço no compose = hostname resolvido via DNS interno automático |
+| `condition: service_healthy` | Aguarda `pg_isready` passar antes de iniciar o ETL — garante que o Postgres aceita conexões |
+| `restart: "no"` | ETL é job pontual (batch), não serviço contínuo |
+
+**Output do `docker compose up --build`:**
+```
+✔ Network ex6_docker_default  Created
+✔ Volume ex6_docker_pg_data   Created
+✔ Container ex6_docker-db-1   Created
+✔ Container ex6_docker-etl-1  Created
+
+db-1  | running /docker-entrypoint-initdb.d/setup_dataset.sql
+db-1  | INSERT 0 34    ← dataset carregado automaticamente
+db-1  | database system is ready to accept connections
+etl-1 | [1/3] Extraindo dados do PostgreSQL...
+etl-1 | │ Eletrônicos ┆ 32400.00 │
+etl-1 | │ Periféricos ┆  3916.20 │
+etl-1 | [3/3] Carregando resultado em resumo_faturamento_categoria...
+etl-1 |   Tabela criada com sucesso.
+etl-1 exited with code 0
+```
+
+**Limpeza:**
+```powershell
+docker compose down      # remove containers e rede, preserva volume (dados)
+docker compose down -v   # remove tudo incluindo volume (⚠️ apaga dados do banco)
+```
 
 ---

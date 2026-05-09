@@ -1,0 +1,20 @@
+FROM python:3.14-slim
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONIOENCODING=utf-8
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+
+WORKDIR /app
+
+RUN useradd --no-create-home appuser && chown appuser:appuser /app
+
+COPY requirements-etl.txt .
+RUN pip install --no-cache-dir -r requirements-etl.txt
+
+COPY --chown=appuser:appuser etl_pipeline.py .
+
+USER appuser
+
+CMD ["python", "etl_pipeline.py"]

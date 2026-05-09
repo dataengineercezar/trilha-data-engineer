@@ -1,0 +1,41 @@
+# ── Estágio 1: builder ────────────────────────────────────────────────────────
+# Imagem completa com ferramentas de build para instalar dependências
+FROM python:3.14-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Cria o virtualenv isolado — tudo que o pip instalar vai para /opt/venv
+RUN python -m venv /opt/venv
+
+# Coloca o pip e os binários do venv no PATH
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+
+# ── Estágio 2: runtime ────────────────────────────────────────────────────────
+# Imagem limpa — sem build tools, sem cache de pip, sem o requirements.txt
+FROM python:3.14-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Copia apenas o /opt/venv completo do builder — nada mais
+COPY --from=builder /opt/venv /opt/venv
+
+# Ativa o venv no runtime também
+ENV PATH="/opt/venv/bin:$PATH"
+
+RUN useradd --no-create-home appuser && chown appuser:appuser /app
+
+COPY --chown=appuser:appuser . .
+
+USER appuser
+
+CMD ["python", "hello_pipeline.py"]

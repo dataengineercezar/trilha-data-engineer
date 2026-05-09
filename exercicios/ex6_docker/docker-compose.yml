@@ -1,0 +1,39 @@
+services:
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: estudo123
+      POSTGRES_DB: postgres
+    volumes:
+      # Inicialização automática: todo .sql em docker-entrypoint-initdb.d/
+      # é executado na primeira vez que o container sobe (com UTF-8 garantido)
+      - ../../sql/setup_dataset.sql:/docker-entrypoint-initdb.d/setup_dataset.sql:ro
+      # Volume nomeado para persistir dados entre restarts
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      # Só passa quando o Postgres estiver realmente aceitando conexões
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  etl:
+    build:
+      context: .
+      dockerfile: Dockerfile.etl
+    environment:
+      DB_HOST: db          # nome do serviço acima — resolvido via DNS do compose
+      DB_PORT: "5432"
+      DB_NAME: postgres
+      DB_USER: postgres
+      DB_PASS: estudo123
+    depends_on:
+      db:
+        condition: service_healthy   # aguarda healthcheck passar antes de iniciar
+    restart: "no"                    # pipeline ETL roda uma vez e termina
+
+volumes:
+  pg_data:

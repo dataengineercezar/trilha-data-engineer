@@ -1,0 +1,33 @@
+# Controle de versão
+.git/
+.gitignore
+
+# Ambientes virtuais Python
+.venv/
+venv/
+env/
+
+# Bytecode Python (já evitado por PYTHONDONTWRITEBYTECODE, mas por garantia)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Cache de ferramentas
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Documentação e arquivos de estudo (não fazem parte do runtime)
+*.md
+
+# Variáveis de ambiente com segredos
+.env
+.env.*
+
+# Logs
+*.log
+
+# Metadados de SO
+.DS_Store
+Thumbs.db
