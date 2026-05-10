@@ -73,6 +73,17 @@
   - [Docker Hub: publicar imagens](#docker-hub-publicar-imagens)
   - [Padrões de produção para DE](#padrões-de-produção-para-de)
   - [Exercícios Resolvidos — Docker](#exercícios-resolvidos--docker)
+- [APACHE SPARK / PYSPARK](#apache-spark--pyspark)
+  - [Por que Spark existe — o problema que ele resolve](#por-que-spark-existe--o-problema-que-ele-resolve)
+  - [Arquitetura: Driver, Executors e Cluster Manager](#arquitetura-driver-executors-e-cluster-manager)
+  - [O modelo de dados: RDD, DataFrame e Dataset](#o-modelo-de-dados-rdd-dataframe-e-dataset)
+  - [Lazy evaluation: transformações vs actions](#lazy-evaluation-transformações-vs-actions)
+  - [DAG de execução: jobs, stages e tasks](#dag-de-execução-jobs-stages-e-tasks)
+  - [Shuffle: o inimigo da performance](#shuffle-o-inimigo-da-performance)
+  - [Particionamento: a unidade de paralelismo](#particionamento-a-unidade-de-paralelismo)
+  - [SparkSession e configuração](#sparksession-e-configuração)
+  - [DataFrame API essencial](#dataframe-api-essencial)
+  - [Exercícios Resolvidos — Spark](#exercícios-resolvidos--spark)
 
 ---
 
@@ -5169,5 +5180,366 @@ etl-1 exited with code 0
 docker compose down      # remove containers e rede, preserva volume (dados)
 docker compose down -v   # remove tudo incluindo volume (⚠️ apaga dados do banco)
 ```
+
+---
+
+---
+
+# APACHE SPARK / PYSPARK
+
+> Spark é o motor de processamento distribuído mais usado em Data Engineering.
+> Entender como ele funciona por dentro é o que separa quem "usa Spark" de quem "entende Spark".
+
+---
+
+## Por que Spark existe — o problema que ele resolve
+
+### O problema: dados maiores que uma máquina
+
+Em 2004, o Google publicou o paper **MapReduce** — um modelo para processar terabytes de dados dividindo o trabalho entre centenas de máquinas. O Hadoop implementou isso em Java, mas era lento: cada etapa do processamento escrevia no disco (HDFS) antes de passar para a próxima.
+
+**Spark (2009, UC Berkeley AMP Lab)** resolveu o gargalo principal: processamento **em memória**. Em vez de escrever no disco entre cada etapa, o Spark mantém os dados em RAM sempre que possível. Resultado: até **100x mais rápido** que MapReduce para workloads iterativos (machine learning, SQL analítico).
+
+### Quando usar Spark vs alternativas
+
+| Volume | Ferramenta certa |
+|---|---|
+| < 1GB | Polars ou Pandas |
+| 1GB – 100GB | DuckDB, Polars LazyFrame |
+| > 100GB / múltiplas máquinas | **Spark** |
+| Streaming em tempo real | Spark Structured Streaming, Flink |
+
+Spark tem overhead de inicialização (~10s para criar SparkSession). Para datasets pequenos, Polars ou DuckDB são melhores escolhas.
+
+---
+
+## Arquitetura: Driver, Executors e Cluster Manager
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          CLUSTER MANAGER                                │
+│              (YARN / Kubernetes / Standalone / Mesos)                   │
+│           Aloca recursos (CPU/RAM) para a aplicação Spark               │
+└──────────────────────────┬──────────────────────────────────────────────┘
+                           │
+           ┌───────────────▼───────────────┐
+           │           DRIVER              │
+           │  SparkContext / SparkSession   │  ← seu código Python roda aqui
+           │  Analisa o código              │
+           │  Cria o DAG de execução        │
+           │  Divide em stages e tasks      │
+           │  Coordena os executors         │
+           └──────┬──────────────┬──────────┘
+                  │              │
+       ┌──────────▼──┐      ┌────▼──────────┐
+       │  EXECUTOR 1 │      │  EXECUTOR 2   │   ← processos JVM nas máquinas worker
+       │  ┌────────┐ │      │  ┌──────────┐ │
+       │  │ Task 1 │ │      │  │  Task 3  │ │   ← menor unidade de trabalho
+       │  │ Task 2 │ │      │  │  Task 4  │ │   ← processa 1 partition
+       │  └────────┘ │      │  └──────────┘ │
+       │  Cache/RAM  │      │  Cache/RAM    │
+       └─────────────┘      └───────────────┘
+```
+
+### Responsabilidades de cada componente
+
+**Driver:**
+- Processo principal onde seu código Python/Scala/Java roda
+- Cria a `SparkSession` (ponto de entrada da aplicação)
+- Traduz transformações em um DAG (grafo acíclico dirigido)
+- Programa tasks nos executors via o Cluster Manager
+- Coleta resultados das actions
+
+**Executor:**
+- Processo JVM rodando em cada máquina worker
+- Executa as tasks enviadas pelo Driver
+- Armazena dados em cache (memória ou disco)
+- Reporta status e resultados de volta ao Driver
+- Cada executor pode ter múltiplos slots de task (= threads)
+
+**Cluster Manager:**
+- Gerencia os recursos do cluster
+- Aloca CPU e RAM para a aplicação Spark
+- **Standalone**: próprio do Spark, simples
+- **YARN**: padrão no Hadoop ecosystem (EMR, Dataproc)
+- **Kubernetes**: padrão moderno em cloud
+- **Local**: Driver e Executor no mesmo processo (desenvolvimento/testes)
+
+### Modo local (desenvolvimento)
+
+```python
+from pyspark.sql import SparkSession
+
+spark = SparkSession.builder \
+    .appName("meu-pipeline") \
+    .master("local[*]") \
+    .getOrCreate()
+# local[*] = usa todos os cores da máquina
+# local[1] → 1 thread (sem paralelismo, bom para debug)
+# local[4] → 4 threads
+```
+
+---
+
+## O modelo de dados: RDD, DataFrame e Dataset
+
+### Evolução histórica
+
+```
+2009  RDD (Resilient Distributed Dataset)
+         ↓
+2013  DataFrame (Spark SQL) — API de alto nível com otimizador (Catalyst)
+         ↓
+2015  Dataset (Scala/Java) — tipo seguro em compile-time
+         ↓
+2020+ DataFrame = Dataset[Row] em Python — DataFrame é o padrão atual
+```
+
+### RDD — a fundação
+
+O **RDD** é a abstração original do Spark: uma coleção distribuída e imutável de objetos particionada entre as máquinas do cluster.
+
+```python
+sc = spark.sparkContext
+rdd = sc.parallelize([1, 2, 3, 4, 5, 6], numSlices=3)
+# numSlices=3 → 3 partições distribuídas entre os executors
+
+rdd_dobrado = rdd.map(lambda x: x * 2)     # transformação (lazy)
+rdd_par = rdd_dobrado.filter(lambda x: x > 4)  # transformação (lazy)
+resultado = rdd_par.collect()               # action → executa tudo → [6, 8, 10, 12]
+```
+
+**Características:**
+- **Resilient**: recalcula partições perdidas usando lineage (grafo de como foi construído)
+- **Distributed**: particionado entre múltiplas máquinas
+- **Imutável**: transformações criam novos RDDs
+- **Sem schema**: Spark não conhece os tipos → não consegue otimizar
+
+### DataFrame — o padrão atual
+
+DataFrame tem **schema** (colunas com tipos definidos). O otimizador **Catalyst** pode reordenar, combinar e otimizar operações automaticamente.
+
+```python
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType, IntegerType
+
+schema = StructType([
+    StructField("id_pedido",  IntegerType(), nullable=False),
+    StructField("categoria",  StringType(),  nullable=True),
+    StructField("valor",      DoubleType(),  nullable=True),
+])
+df = spark.read.csv("dados.csv", header=True, schema=schema)
+```
+
+### Catalyst Optimizer — o que acontece por dentro
+
+```
+Código Python/SQL
+      ↓
+  Unresolved Logical Plan   (parse)
+      ↓
+  Resolved Logical Plan     (verifica que colunas existem no schema)
+      ↓
+  Optimized Logical Plan    (predicate pushdown, column pruning, etc.)
+      ↓
+  Physical Plans            (múltiplas estratégias possíveis)
+      ↓
+  Selected Physical Plan    (Cost Model escolhe o mais barato)
+      ↓
+  Tungsten (code generation) → JVM bytecode otimizado
+```
+
+- **Predicate pushdown**: filtros são empurrados antes de joins/aggregations — lê menos dados
+- **Column pruning**: colunas não usadas são eliminadas antes de ler o arquivo
+
+---
+
+## Lazy evaluation: transformações vs actions
+
+### Transformações — não executam imediatamente
+
+```python
+# Nenhuma dessas linhas toca nos dados — apenas constroem o plano
+df_filtrado = df.filter(F.col("valor") > 1000)
+df_agrupado = df_filtrado.groupBy("categoria").agg(F.sum("valor").alias("total"))
+df_ordenado = df_agrupado.orderBy(F.col("total").desc())
+```
+
+**Narrow (sem shuffle):** cada partition de output depende de no máximo uma partition de input.
+```python
+df.filter(...)       # narrow — processamento local
+df.select(...)       # narrow
+df.withColumn(...)   # narrow
+```
+
+**Wide (com shuffle):** dados de múltiplas partitions precisam ser combinados.
+```python
+df.groupBy(...).agg(...)   # wide — shuffle
+df.join(other, ...)        # wide — shuffle
+df.orderBy(...)            # wide — shuffle global
+df.distinct()              # wide — shuffle
+```
+
+### Actions — disparam a execução
+
+```python
+df_ordenado.show(20)              # exibe no console
+df_ordenado.collect()             # retorna lista de Row para o Driver ⚠️ cuidado com memória
+df_ordenado.count()               # conta registros
+df_ordenado.first()               # primeiro registro
+df_ordenado.take(5)               # primeiros N registros
+df_ordenado.toPandas()            # converte para Pandas ⚠️ carrega tudo no Driver
+df_ordenado.write.parquet(path)   # salva em disco
+```
+
+### Por que lazy evaluation é uma vantagem
+
+O Catalyst combina múltiplas transformações em um único passo otimizado, aplica predicate pushdown e column pruning antes de ler o arquivo. Sem lazy evaluation, cada transformação executaria separadamente, relendo os dados.
+
+---
+
+## DAG de execução: jobs, stages e tasks
+
+```
+ACTION → JOB
+          │
+          ├─ STAGE 0 (narrow transformations)
+          │     ├─ Task 0 (partition 0)
+          │     ├─ Task 1 (partition 1)
+          │     └─ Task 2 (partition 2)
+          │          ↓ SHUFFLE BOUNDARY (wide transformation)
+          └─ STAGE 1 (após shuffle)
+                ├─ Task 3 (partition 0 do shuffle output)
+                └─ Task 4 (partition 1 do shuffle output)
+```
+
+- **Job**: uma action = um job
+- **Stage**: grupo de transformações sem shuffle entre elas. Fronteira = wide transformation
+- **Task**: processa **uma partition**. Tasks do mesmo stage rodam em paralelo
+
+### Ver o plano de execução
+
+```python
+df_resultado.explain()                    # plano físico resumido
+df_resultado.explain(mode="formatted")    # plano detalhado (Spark 3.0+)
+# Procure por: Exchange (shuffle), HashAggregate, Filter, FileScan
+```
+
+O **Spark UI** fica em `http://localhost:4040` durante a execução — mostra o DAG visual, duração de cada stage/task e quantidade de shuffle read/write.
+
+---
+
+## Shuffle: o inimigo da performance
+
+Shuffle redistribui dados entre partições — registros com a mesma chave precisam ir para o mesmo executor.
+
+```
+ANTES:                               DEPOIS:
+Partition 0: [A=10, B=5, A=3]        Partition 0: [A=10, A=3, A=7]
+Partition 1: [B=2,  C=8, A=7]   →   Partition 1: [B=5,  B=2, B=9]
+Partition 2: [C=1,  B=9, C=4]        Partition 2: [C=8,  C=1, C=4]
+```
+
+Custo: escrita em disco + transferência de rede entre todos os executors.
+
+### Como minimizar shuffle
+
+```python
+# 1. Filtrar ANTES de agregar
+df.filter(F.col("valor") > 0).groupBy("categoria").agg(F.sum("valor"))
+
+# 2. Broadcast join — elimina shuffle em joins com tabelas pequenas
+from pyspark.sql.functions import broadcast
+df_pedidos.join(broadcast(df_categorias), "id_categoria")
+# Automático quando tabela < spark.sql.autoBroadcastJoinThreshold (default: 10MB)
+
+# 3. Reduzir spark.sql.shuffle.partitions (default 200 é excessivo para dados pequenos)
+spark.conf.set("spark.sql.shuffle.partitions", "8")
+
+# 4. AQE — Adaptive Query Execution (Spark 3.0+): ajuste automático
+spark.conf.set("spark.sql.adaptive.enabled", "true")
+```
+
+---
+
+## Particionamento: a unidade de paralelismo
+
+```python
+df.rdd.getNumPartitions()       # ver número de partições atuais
+
+df.repartition(16)              # aumentar (COM shuffle — redistribuição por hash)
+df.repartition(16, "categoria") # reparticionar por coluna (otimiza joins subsequentes)
+df.coalesce(4)                  # diminuir (SEM shuffle — combina partições adjacentes)
+
+# Regra prática: ~128MB por partition, pelo menos tantas quanto cores disponíveis
+```
+
+---
+
+## SparkSession e configuração
+
+```python
+from pyspark.sql import SparkSession
+
+spark = (
+    SparkSession.builder
+    .appName("pipeline-vendas")
+    .master("local[*]")
+    .config("spark.driver.memory", "4g")
+    .config("spark.sql.shuffle.partitions", "8")
+    .config("spark.sql.adaptive.enabled", "true")
+    .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
+    .getOrCreate()
+)
+spark.sparkContext.setLogLevel("WARN")   # reduzir logs verbosos
+```
+
+---
+
+## DataFrame API essencial
+
+```python
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+
+# ─── Leitura ──────────────────────────────────────────────────────────────────
+df = spark.read.option("header", "true").option("inferSchema", "true").csv("dados.csv")
+df = spark.read.parquet("dados/")
+
+# ─── Seleção / filtros / novas colunas ────────────────────────────────────────
+df.select("id", "categoria", F.col("valor") * 1.1)
+df.filter((F.col("categoria") == "Eletrônicos") & F.col("valor").isNotNull())
+df.withColumn("valor_com_iva", F.col("valor") * 1.23)
+df.withColumnRenamed("old", "new")
+
+# ─── Aggregações ──────────────────────────────────────────────────────────────
+df.groupBy("categoria").agg(
+    F.sum("valor").alias("total"),
+    F.avg("valor").alias("media"),
+    F.count("*").alias("qtd"),
+    F.countDistinct("id_cliente").alias("clientes_unicos"),
+)
+
+# ─── Joins ────────────────────────────────────────────────────────────────────
+df_pedidos.join(df_clientes, on="id_cliente", how="left")
+df_pedidos.join(broadcast(df_categorias), "id_categoria")
+
+# ─── Window Functions ─────────────────────────────────────────────────────────
+w = Window.partitionBy("categoria").orderBy(F.col("valor").desc())
+df.withColumn("rank", F.rank().over(w))
+df.withColumn("lag_valor", F.lag("valor", 1).over(
+    Window.partitionBy("id_cliente").orderBy("data_pedido")
+))
+
+# ─── Escrita ──────────────────────────────────────────────────────────────────
+df.write.mode("overwrite").partitionBy("ano", "mes").parquet("output/vendas/")
+df.coalesce(1).write.mode("overwrite").parquet("output/resultado_final/")
+# coalesce(1) antes de escrever evita centenas de arquivos pequenos
+```
+
+---
+
+## Exercícios Resolvidos — Spark
+
+*(Será preenchido durante os exercícios da Semana 9)*
 
 ---
