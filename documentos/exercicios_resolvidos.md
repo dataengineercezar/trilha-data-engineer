@@ -5540,6 +5540,282 @@ df.coalesce(1).write.mode("overwrite").parquet("output/resultado_final/")
 
 ## Exercícios Resolvidos — Spark
 
-*(Será preenchido durante os exercícios da Semana 9)*
+### Q1 — SparkSession, leitura e primeiras transformações
+
+**Conceitos praticados:** SparkSession, `createDataFrame`, `filter`, `withColumn`, `select`, `explain()`, lazy evaluation.
+
+```python
+import os
+os.environ["JAVA_HOME"] = r"C:\Program Files\Java\jre1.8.0_471"  # necessário se JAVA_HOME não estiver nas variáveis de sistema
+
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col
+
+spark = SparkSession.builder \
+    .appName("Exercicio_Q1") \
+    .master("local[*]") \
+    .config("spark.sql.shuffle.partitions", "4") \
+    .config("spark.ui.enabled", "false") \
+    .getOrCreate()
+spark.sparkContext.setLogLevel("ERROR")
+
+dados_pedidos = [
+    (1, 150.0, "entregue"), (2, 80.0, "processando"), (3, 200.0, "entregue"),
+    (4, 50.0, "cancelado"), (5, 300.0, "entregue"), (6, 120.0, "entregue"),
+    (7, 90.0, "processando"), (8, 400.0, "entregue"), (9, 25.0, "entregue"),
+    (10, 600.0, "cancelado")
+]
+df_pedidos = spark.createDataFrame(dados_pedidos, schema=["id_pedido", "valor", "status"])
+
+df_transformado = (
+    df_pedidos
+    .filter(col("status") == "entregue")
+    .withColumn("valor_com_taxa", col("valor") * 1.1)
+    .select("id_pedido", "valor_com_taxa")
+)
+
+df_transformado.explain()
+df_transformado.show()
+```
+
+**Plano gerado (output real):**
+```
+== Physical Plan ==
+*(1) Project [id_pedido#0L, (valor#1 * 1.1) AS valor_com_taxa#6]
++- *(1) Filter (isnotnull(status#2) AND (status#2 = entregue))
+   +- *(1) Scan ExistingRDD[id_pedido#0L,valor#1,status#2]
+```
+
+**Lições do plano:**
+- Prefixo `*(1)` = **WholeStageCodegen**: Catalyst fundiu Scan + Filter + Project em um único bloco JVM compilado — seus 3 passos viram 1 só.
+- `isnotnull(status)` foi adicionado automaticamente pelo Catalyst — ele sabe que `filter(col == valor)` nunca pode ser verdadeiro para `null`.
+- Nenhum `Exchange` = nenhum shuffle = **1 stage único**. Comportamento ideal para transformações narrow.
+- `explain()` não executou os dados — ele apenas imprime o plano já construído no DAG desde o último `select()`. O processamento só ocorre quando uma action é chamada (`show()`, `count()`, `collect()`).
+
+**Bug de ponto flutuante** (`220.00000000000003`): comportamento normal de IEEE 754. Em produção: `F.round(col, 2)` antes de escrever.
+
+---
+
+### Q2 — Narrow vs Wide: identificando shuffle boundaries
+
+**Conceitos praticados:** `explain(mode="formatted")`, `Exchange`, `HashAggregate` two-phase, `hashpartitioning` vs `rangepartitioning`, stages.
+
+```python
+from pyspark.sql.functions import col, avg
+
+data = [(i, f"Produto_{i % 5}", i * 10.5) for i in range(1, 51)]
+df = spark.createDataFrame(data, ["id", "categoria", "preco"])
+
+df_final = (
+    df
+    .filter(col("preco") > 100)
+    .withColumn("preco_com_desconto", col("preco") * 0.9)
+    .groupBy("categoria")
+    .agg(avg("preco_com_desconto").alias("media_preco"))
+    .orderBy("media_preco")
+)
+
+df_final.explain(mode="formatted")
+```
+
+**Plano real — com `orderBy` (2 `Exchange`, 3 stages):**
+```
+Sort
++- Exchange (7) rangepartitioning(media_preco, 200)      ← stage boundary 2
+   +- HashAggregate (final)
+      +- Exchange (5) hashpartitioning(categoria, 200)   ← stage boundary 1
+         +- HashAggregate (partial_avg)
+            +- Project (withColumn)
+               +- Filter
+                  +- Scan ExistingRDD
+```
+
+**Sem `orderBy` (1 `Exchange`, 2 stages):** Exchange (7) e Sort desaparecem.
+
+**Lições:**
+- **Two-phase aggregation**: o Catalyst inseriu `partial_avg` automaticamente antes do shuffle. Cada executor calcula `sum` e `count` locais e envia apenas esses dois números pela rede — não os registros brutos. Reduz o volume do shuffle em 10–100x.
+- **Dois tipos de `Exchange`**: `hashpartitioning` (garante que mesma chave vai pro mesmo executor) vs `rangepartitioning` (divide intervalos de valores para ordenação global).
+- **`hashpartitioning(categoria, 200)`** para 5 categorias únicas = 195 partições vazias. Usar `spark.sql.shuffle.partitions = "4"` ou AQE resolve isso.
+- Transformações **narrow**: `filter`, `withColumn`, `HashAggregate partial` (processamento local).
+- Transformações **wide**: `groupBy + agg`, `orderBy` (exigem shuffle).
+
+---
+
+### Q3 — DataFrame API: join, Window Functions, lag()
+
+**Conceitos praticados:** `join`, `Window.partitionBy`, `rank()`, `lag()`, crescimento percentual, `groupBy + agg`.
+
+```python
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+
+# Dados
+clientes = [
+    (1, "João Silva",     "Premium"),
+    (2, "Maria Oliveira", "Standard"),
+    (3, "Pedro Costa",    "Premium"),
+    (4, "Lucia Alves",    "Standard"),
+    (5, "Roberto Nunes",  "Premium"),
+]
+df_clientes = spark.createDataFrame(clientes, ["id_cliente", "nome", "segmento"])
+
+pedidos = [(i, (i % 5) + 1, round(random.uniform(50, 1500), 2),
+            categorias[i % 4], (i % 12) + 1)
+           for i in range(1, 21)]
+df_pedidos = spark.createDataFrame(
+    pedidos, ["id_pedido", "id_cliente", "valor", "categoria", "mes"]
+)
+```
+
+**Q3.1 — Join + filtro por segmento:**
+```python
+df_q31 = (
+    df_pedidos
+    .join(df_clientes, on="id_cliente", how="inner")
+    .filter(F.col("segmento") == "Premium")
+    .select("id_pedido", "nome", "segmento", "categoria", "valor", "mes")
+    .orderBy("id_pedido")
+)
+```
+
+**Q3.2 — Ranking por cliente (Window Function):**
+```python
+janela_cliente = Window.partitionBy("id_cliente").orderBy(F.col("valor").desc())
+
+df_q32 = (
+    df_pedidos
+    .withColumn("rank_valor", F.rank().over(janela_cliente))
+    .join(df_clientes, on="id_cliente", how="inner")
+    .select("id_cliente", "nome", "id_pedido", "valor", "rank_valor")
+    .orderBy("id_cliente", "rank_valor")
+)
+# rank()       → pula números em empate (1, 1, 3)
+# dense_rank() → não pula (1, 1, 2)
+# row_number() → único sempre, ordem arbitrária nos empates (1, 2, 3)
+```
+
+**Q3.3 — Crescimento mês a mês com lag():**
+```python
+df_mensal = (
+    df_pedidos
+    .groupBy("mes")
+    .agg(F.round(F.sum("valor"), 2).alias("faturamento"))
+    .orderBy("mes")
+)
+
+janela_mes = Window.orderBy("mes")  # sem partitionBy = sequência global
+
+df_q33 = (
+    df_mensal
+    .withColumn("fat_mes_anterior", F.lag("faturamento", 1).over(janela_mes))
+    .withColumn(
+        "crescimento_pct",
+        F.round(
+            (F.col("faturamento") - F.col("fat_mes_anterior"))
+            / F.col("fat_mes_anterior") * 100,
+            2
+        )
+    )
+)
+# lag(col, offset=1) → valor da linha anterior na janela
+# Primeira linha retorna null (sem mês anterior) — esperado e correto
+# Em produção com múltiplos anos: Window.partitionBy("ano").orderBy("mes")
+```
+
+**Q3.4 — Top categoria por valor médio:**
+```python
+df_q34 = (
+    df_pedidos
+    .groupBy("categoria")
+    .agg(F.round(F.avg("valor"), 2).alias("ticket_medio"))
+    .orderBy(F.col("ticket_medio").desc())
+    .limit(1)
+)
+
+# Alternativa com dense_rank() — ranqueia todas as categorias sem limit:
+janela_rank = Window.orderBy(F.col("ticket_medio").desc())
+df_todas = (
+    df_pedidos
+    .groupBy("categoria")
+    .agg(F.round(F.avg("valor"), 2).alias("ticket_medio"))
+    .withColumn("rank", F.dense_rank().over(janela_rank))
+)
+```
+
+---
+
+### Q4 — Performance: broadcast join, shuffle.partitions, AQE
+
+**Conceitos praticados:** `broadcast()`, `SortMergeJoin` vs `BroadcastHashJoin`, `spark.sql.shuffle.partitions`, `autoBroadcastJoinThreshold`.
+
+```python
+# df_grande: 1000 registros (tabela fato)
+# df_categorias: 10 registros (tabela dimensão — candidata a broadcast)
+
+# Cenário A — join padrão (broadcast desativado)
+spark.conf.set("spark.sql.autoBroadcastJoinThreshold", "-1")
+df_join_a = df_grande.join(df_categorias, on="id_categoria", how="inner")
+df_join_a.explain(mode="formatted")
+# Plano: SortMergeJoin ou ShuffledHashJoin → 2 Exchange (shuffle nos dois lados)
+
+# Cenário B — broadcast join explícito
+from pyspark.sql.functions import broadcast
+df_join_b = df_grande.join(broadcast(df_categorias), on="id_categoria")
+df_join_b.explain(mode="formatted")
+# Plano: BroadcastHashJoin → 0 Exchange (df_categorias copiado para cada executor)
+
+# shuffle.partitions: 200 vs 4
+spark.conf.set("spark.sql.shuffle.partitions", "200")  # 200 tasks, 190 vazias
+spark.conf.set("spark.sql.shuffle.partitions", "4")    # 4 tasks, todas úteis
+```
+
+**Análise dos planos:**
+- **Cenário A**: `SortMergeJoin` — ambos os DataFrames fazem `Exchange` antes do join. Custo: serialização + rede + deserialização + sort nos dois lados.
+- **Cenário B**: `BroadcastHashJoin` — `df_categorias` é enviado uma vez para cada executor. O join é resolvido via hash lookup em memória sem nenhum shuffle.
+- **Por que broadcast é mais rápido**: evita shuffle nos dois lados. Para tabelas de dimensão pequenas (< 10MB), o custo de broadcast é marginal.
+- **Risco de broadcast em tabela grande**: driver coleta o DataFrame inteiro, serializa e envia para cada executor — pode saturar rede e causar OOM. Usar apenas quando tabela cabe confortavelmente na memória de um executor.
+- **shuffle.partitions=200 para dados pequenos**: 10 categorias únicas → 190 das 200 partições ficam vazias. O scheduler ainda agenda 200 tasks — overhead puro. AQE (`spark.sql.adaptive.enabled=true`) resolve automaticamente.
+
+---
+
+### Q5 — Leitura e escrita de Parquet particionado
+
+**Conceitos praticados:** `write.partitionBy()`, Partition Pruning, `PartitionFilters` no explain, small files problem, schema ao ler partição diretamente.
+
+```python
+# Escrita particionada
+df_transacoes.write \
+    .mode("overwrite") \
+    .partitionBy("ano", "mes") \
+    .parquet("output/transacoes")
+# Estrutura gerada: output/transacoes/ano=2022/mes=1/part-00000-....parquet
+#                                     ano=2022/mes=2/...
+#                                     ano=2023/mes=1/...
+
+# Leitura com Partition Pruning
+df_leitura = spark.read.parquet("output/transacoes")
+df_filtrado = df_leitura.filter(F.col("ano") == 2023)
+df_filtrado.explain(mode="formatted")
+# PartitionFilters: [isnotnull(ano), (ano = 2023)]
+# → Spark lê APENAS os diretórios ano=2023/ — 2022 e 2024 nunca são abertos
+
+# Comparação: filtro em coluna NÃO-particionada (sem Partition Pruning)
+df_sem_pruning = df_leitura.filter(F.col("categoria") == "Livros")
+df_sem_pruning.explain(mode="formatted")
+# Nenhum PartitionFilters → Spark lê TODOS os diretórios e filtra dentro dos arquivos
+
+# Leitura direta de uma partição
+df_jun_2023 = spark.read.parquet("output/transacoes/ano=2023/mes=6/")
+df_jun_2023.printSchema()
+# ATENÇÃO: colunas `ano` e `mes` NÃO aparecem no schema ao ler partição diretamente
+# Elas só são inferidas do path quando lendo o diretório raiz
+```
+
+**Lições:**
+- **Partition Pruning** = seletividade no nível de I/O. O Spark usa os nomes dos diretórios (`ano=2023`) para eliminar partições antes de qualquer leitura.
+- **`PartitionFilters`** no explain = o filtro eliminou diretórios inteiros. **`PushedFilters`** = filtro dentro do arquivo Parquet (Predicate Pushdown — filtra row groups sem desserializar tudo).
+- **`(ano, mes, categoria)` vs `(ano, mes)`** para leitura de "todos os dados de 2023": `(ano, mes)` é melhor. Com `categoria` como terceiro nível, um filtro só em `ano=2023` ainda percorreria N×12 diretórios (N = cardinalidade de categoria). Além disso, mais níveis = mais arquivos pequenos (small files problem).
+- **Regra de particionamento**: particione pelas colunas que aparecem nos filtros mais frequentes, do mais geral ao mais específico. Evite colunas de alta cardinalidade.
+- **Schema ao ler partição diretamente**: colunas de partição (`ano`, `mes`) não aparecem no schema — o Spark as infere do path apenas ao ler o diretório raiz.
 
 ---
