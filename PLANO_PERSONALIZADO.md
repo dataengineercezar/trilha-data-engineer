@@ -26,20 +26,23 @@
 
 ## DIAGNÓSTICO ATUAL
 
-| Habilidade | Nível Atual | Meta |
-|---|---|---|
-| Python | Básico | Avançado |
-| SQL | Básico | Avançado |
-| Docker | Superficial | Proficiente |
-| Git/GitHub | Superficial | Proficiente |
-| Spark/PySpark | Superficial | Avançado |
-| Airflow | Superficial | Proficiente |
-| dbt | Superficial | Proficiente |
-| Kafka | Superficial | Intermediário |
-| Cloud | Superficial | AWS ou GCP Proficiente |
-| Databricks | Superficial | Certificado |
+> Atualizado: Mai/2026 — após conclusão da Semana 9
 
-**Diagnóstico:** Base ampla com exposição a muitas ferramentas, mas fundamentos de Python e SQL precisam ser solidificados ANTES de aprofundar as ferramentas. Esse é o gap mais comum que impede a progressão para sênior.
+| Habilidade | Nível Inicial | Nível Atual | Meta |
+|---|---|---|---|
+| Python | Básico | Intermediário ✅ | Avançado |
+| SQL | Básico | Intermediário ✅ | Avançado |
+| Docker | Superficial | Proficiente ✅ | Proficiente |
+| Git/GitHub | Superficial | Proficiente ✅ | Proficiente |
+| Spark/PySpark | Superficial | Intermediário ✅ | Avançado |
+| DuckDB / Polars | Superficial | Intermediário ✅ | Intermediário |
+| Airflow | Superficial | Superficial | Proficiente |
+| dbt | Superficial | Superficial | Proficiente |
+| Kafka | Superficial | Superficial | Intermediário |
+| Cloud | Superficial | Superficial | AWS Proficiente |
+| Databricks | Superficial | Superficial | Certificado |
+
+**Diagnóstico atual:** Fase 1 concluída — fundamentos sólidos. Entrando na Fase 2 com Spark Avançado. Gap crítico atual: ainda sem experiência real em orquestração (Airflow) e transformação declarativa (dbt).
 
 ---
 
@@ -335,19 +338,20 @@ Semanas 45–48 → Deep Learning (PyTorch) + HuggingFace
 ## CHECKPOINTS DE AVALIAÇÃO
 
 A cada 4 semanas, farei uma avaliação técnica:
-- **Semana 4** → Prova SQL (Window Functions + CTEs)
-- **Semana 8** → Code review do seu ETL em Python
-- **Semana 12** → Desafio PySpark com dataset real
-- **Semana 16** → Revisão do projeto dbt no GitHub
-- **Semana 20** → Avaliação do pipeline Airflow
-- **Semana 24** → Revisão do projeto integrador
+- **Semana 4** → ✅ SQL (Window Functions + CTEs) — concluído
+- **Semana 8** → ✅ ETL containerizado + publicado no Docker Hub — concluído
+- **Semana 12** → ⬜ Desafio PySpark com dataset real
+- **Semana 16** → ⬜ Revisão do projeto dbt no GitHub
+- **Semana 20** → ⬜ Avaliação do pipeline Airflow
+- **Semana 24** → ⬜ Revisão do projeto integrador
 
 ---
 
 ## PORTFÓLIO — ENTREGAS POR FASE
 
 ```
-Fase 1 (mês 2):  repo "python-etl-pipeline" no GitHub
+Fase 1 (mês 2):  ✅ github.com/dataengineercezar053/trilha-data-engineer
+                     + hub.docker.com/r/dataengineercezar053/trilha-de-pipeline
 Fase 2 (mês 6):  repo "dw-dbt-airflow" + repo "streaming-kafka-delta"
 Fase 3 (mês 9):  repo "aws-data-pipeline" + certificação Databricks
 Fase 4 (mês 12): repo "mlops-pipeline"
@@ -357,24 +361,23 @@ Fase 4 (mês 12): repo "mlops-pipeline"
 
 ## PRÓXIMO PASSO IMEDIATO
 
-**Hoje (Semana 1, Dia 1):**
+**Semana 10 — Spark Avançado** (ambiente já configurado)
 
-1. Instalar ferramentas base:
-```bash
-# Python moderno
-winget install astral-sh.uv
+Temas:
+- Window Functions com `rowsBetween` / `rangeBetween`
+- UDFs — quando usar e por que evitar (overhead de serialização Python ↔ JVM)
+- `cache()` vs `persist(StorageLevel.MEMORY_AND_DISK)`
+- AQE — Adaptive Query Execution (skew join, coalesce automático)
 
-# Docker Desktop
-winget install Docker.DockerDesktop
+```powershell
+# Ativar ambiente
+cd d:\3_Estudos\TRILHA_DE
+.\.venv\Scripts\Activate.ps1
 
-# DBeaver (cliente SQL)
-winget install dbeaver.dbeaver
-
-# PostgreSQL via Docker (após instalar Docker)
-docker run -d --name postgres-estudo -e POSTGRES_PASSWORD=senha123 -p 5432:5432 postgres:16
+# PostgreSQL (se necessário)
+docker start postgres-estudo
 ```
 
-2. Criar repositório no GitHub: `trilha-data-engineer`
-3. Fazer o primeiro exercício Python (ver abaixo)
+Notebook: `exercicios/semana09_spark/` → criar `semana10_spark_avancado/`
 
 ---
