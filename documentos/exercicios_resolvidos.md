@@ -4,6 +4,29 @@
 
 ---
 
+## ROADMAP — Senior Data Engineer Wheel
+
+Baseado no framework de tiers do mercado (2026):
+
+| Tier | Categoria | Ferramentas | Status |
+|------|-----------|-------------|--------|
+| **Junior** | 1. Programming | Python + SQL | ✅ Semanas 1–4 |
+| **Junior** | 4. Cloud | AWS / GCP / Azure (um) | ⬜ Semana 13 |
+| **Junior** | 5. Warehousing | Snowflake / BigQuery / Redshift | ⬜ Semana 14 |
+| **Mid** | 2. Processing | Spark / Databricks | ✅ Semanas 9–10 |
+| **Mid** | 3. Orchestration | Airflow / Prefect / Dagster | ⬜ Semana 12 |
+| **Mid** | 9. Data Quality | dbt tests + Great Expectations | ⬜ Semana 11 |
+| **Senior** | 6. Streaming | Kafka | ⬜ Semana 15 |
+| **Senior** | 7. Lakehouse | Iceberg / Delta / Hudi | ⬜ Semana 16 |
+| **Senior** | 8. DevOps | Docker + Kubernetes + Terraform | ✅ Semana 8 (Docker) |
+| **Senior** | 10. Architecture | Data modeling + system design | ⬜ Semana 17 |
+
+> **Princípio:** você não precisa de todas as ferramentas de cada categoria —
+> precisa de **uma tool profunda por categoria** + capacidade de trocar quando o job exigir.
+> Isso é o que separa Mid de Senior.
+
+---
+
 ## ÍNDICE
 
 - [PYTHON](#python)
@@ -84,6 +107,61 @@
   - [SparkSession e configuração](#sparksession-e-configuração)
   - [DataFrame API essencial](#dataframe-api-essencial)
   - [Exercícios Resolvidos — Spark](#exercícios-resolvidos--spark)
+- [SPARK AVANÇADO](#spark-avançado) *(Semana 10 — a preencher)*
+  - [Window Functions com frames: rowsBetween e rangeBetween]
+  - [UDFs: quando usar e por que evitar]
+  - [Cache e Persist: StorageLevel]
+  - [AQE: Adaptive Query Execution]
+  - [Otimização de leitura: schema evolution, predicate pushdown]
+  - [Exercícios Resolvidos — Spark Avançado]
+- [DBT CORE](#dbt-core) *(Semana 11 — a preencher)*
+  - [Por que dbt — o problema que ele resolve]
+  - [Modelos: materializations (table, view, incremental, ephemeral)]
+  - [Refs e sources: lineage automático]
+  - [Testes: not_null, unique, accepted_values, relationships]
+  - [Macros e Jinja]
+  - [dbt docs e lineage graph]
+  - [Exercícios Resolvidos — dbt]
+- [AIRFLOW](#airflow) *(Semana 12 — a preencher)*
+  - [Por que orquestração — o problema que ela resolve]
+  - [Arquitetura: Scheduler, Executor, Worker, Webserver, Metastore]
+  - [DAGs: estrutura, scheduling, catchup]
+  - [Operators: Python, Bash, SQL, Sensor]
+  - [XCom: comunicação entre tasks]
+  - [Retries, SLAs e alertas]
+  - [TaskFlow API (Airflow 2+)]
+  - [Exercícios Resolvidos — Airflow]
+- [CLOUD — AWS](#cloud--aws) *(Semana 13 — a preencher)*
+  - [IAM: usuários, roles, policies]
+  - [S3: buckets, prefixos, lifecycle, event notifications]
+  - [Glue: crawlers, catálogo, jobs ETL]
+  - [Athena: SQL sobre S3 (serverless)]
+  - [Lambda: funções event-driven para DE]
+  - [Exercícios Resolvidos — Cloud]
+- [DATA WAREHOUSING](#data-warehousing) *(Semana 14 — a preencher)*
+  - [Modelagem dimensional: fatos e dimensões]
+  - [Star schema vs Snowflake schema]
+  - [BigQuery / Redshift / Snowflake — diferenças arquiteturais]
+  - [Exercícios Resolvidos — Warehousing]
+- [STREAMING — KAFKA](#streaming--kafka) *(Semana 15 — a preencher)*
+  - [Por que streaming — event-driven vs batch]
+  - [Arquitetura Kafka: brokers, topics, partições, consumer groups]
+  - [Producers e Consumers em Python]
+  - [Spark Structured Streaming]
+  - [Exercícios Resolvidos — Kafka]
+- [LAKEHOUSE — DELTA LAKE](#lakehouse--delta-lake) *(Semana 16 — a preencher)*
+  - [Por que Lakehouse — limitações do Data Lake puro]
+  - [Delta Lake: ACID transactions sobre Parquet]
+  - [Time travel e schema evolution]
+  - [MERGE INTO: upsert em escala]
+  - [Iceberg vs Delta vs Hudi — comparativo]
+  - [Exercícios Resolvidos — Delta Lake]
+- [ARQUITETURA DE DADOS](#arquitetura-de-dados) *(Semana 17 — a preencher)*
+  - [Lambda Architecture vs Kappa Architecture]
+  - [Medallion Architecture: Bronze / Silver / Gold]
+  - [Data Mesh: domínios e data products]
+  - [System design para pipelines de alta disponibilidade]
+  - [Exercícios Resolvidos — Arquitetura]
 
 ---
 
