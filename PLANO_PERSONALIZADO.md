@@ -350,7 +350,7 @@ A cada 4 semanas, farei uma avaliação técnica:
 ## PORTFÓLIO — ENTREGAS POR FASE
 
 ```
-Fase 1 (mês 2):  ✅ github.com/dataengineercezar053/trilha-data-engineer
+Fase 1 (mês 2):  ✅ github.com/dataengineercezar/trilha-data-engineer
                      + hub.docker.com/r/dataengineercezar053/trilha-de-pipeline
 Fase 2 (mês 6):  repo "dw-dbt-airflow" + repo "streaming-kafka-delta"
 Fase 3 (mês 9):  repo "aws-data-pipeline" + certificação Databricks
