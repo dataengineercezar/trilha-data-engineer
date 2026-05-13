@@ -1,5 +1,26 @@
 # PLANO PERSONALIZADO — Data Engineer → Senior / ML Engineer
 > Gerado em: Mai/2026 | 12h/semana | Meta: Nível Sênior + ML Engineer
+> **Atualizado:** Semana 9 concluída (Spark/PySpark fundamentos)
+
+---
+
+## PROGRESSO ATUAL
+
+| Fase | Semanas | Status |
+|------|---------|--------|
+| Fundamentos Python | 1–2 | ✅ Concluído |
+| SQL + DuckDB | 3 | ✅ Concluído |
+| Pandas | 4 | ✅ Concluído |
+| Polars + LazyFrame | 5 | ✅ Concluído |
+| Git Profissional | 6–7 | ✅ Concluído |
+| Docker para DE | 8 | ✅ Concluído |
+| Spark / PySpark | 9 | ✅ Concluído |
+| **Spark Avançado** | **10** | **🔄 Próxima** |
+| dbt Core | 11 | ⬜ |
+| Airflow | 12 | ⬜ |
+| AWS | 13 | ⬜ |
+
+---
 
 ---
 
